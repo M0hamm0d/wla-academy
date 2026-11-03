@@ -11,6 +11,7 @@ import { logAccessDenied, logWarn } from "@/lib/observability/logger";
 import type { Json } from "@/types/database";
 import { mediaUrl, normaliseTags, sanitizeArticleHtml, slugify, slugProblem } from "./content";
 import { journalErrorCode, journalErrorMessage } from "./errors";
+import { FEATURED_ALT_REQUIRED } from "./publish-check";
 import { removeUnusedMedia } from "./media-cleanup";
 import { imageProblem, isArticleMediaPath, sniffImage } from "./media";
 import { formatLondon, londonWallTimeToUtc } from "./time";
@@ -118,9 +119,6 @@ export async function saveRevisionAction(_prev: JournalState, fd: FormData): Pro
   if (d.slug) {
     const problem = slugProblem(d.slug);
     if (problem) return { fieldErrors: { slug: problem } };
-  }
-  if (d.featured_media_id && !d.featured_alt) {
-    return { fieldErrors: { featured_alt: "Describe the featured image for people who can't see it." } };
   }
 
   const fields = {
@@ -251,8 +249,51 @@ export async function resolveCommentAction(_prev: JournalState, fd: FormData): P
 }
 
 // ---------------------------------------------------------- publishing --
+const PUBLISHED_NOTICE = "Published. This version is now live on the public Journal.";
+
+/**
+ * A draft may hold a featured image with no description yet; what goes live may
+ * not (D-147). Checked here, on what was actually saved, because the database's
+ * publish functions don't look at it and the review in the browser is only a
+ * courtesy. A scheduled version is locked, so what passes here is what publishes.
+ */
+async function featuredImageRefusal(supabase: Supa, revisionId: string): Promise<JournalState | null> {
+  const { data, error } = await supabase.from("journal_revisions").select("featured_media_id, featured_alt").eq("id", revisionId).maybeSingle();
+  if (error) {
+    logWarn("journal_action_failed", { op: "publish_check", reason: error.message });
+    return { error: "That didn't work. Please try again." };
+  }
+  if (data?.featured_media_id && !data.featured_alt?.trim()) {
+    return { fieldErrors: { featured_alt: FEATURED_ALT_REQUIRED } };
+  }
+  return null;
+}
+
 export async function publishAction(_prev: JournalState, fd: FormData): Promise<JournalState> {
-  return step(fd, "publish", (s) => s.supabase.rpc("journal_publish", { p_revision: str(fd, "revisionId"), p_expected_hash: str(fd, "contentHash") }), "Published. This version is now live on the public Journal.");
+  const s = await staff();
+  if (!s) return NOT_STAFF;
+  const articleId = str(fd, "articleId");
+  const revisionId = str(fd, "revisionId");
+  const refusal = await featuredImageRefusal(s.supabase, revisionId);
+  if (refusal) return refusal;
+  const { error } = await s.supabase.rpc("journal_publish", { p_revision: revisionId, p_expected_hash: str(fd, "contentHash") });
+  if (error) {
+    const code = journalErrorCode(error);
+    // Trying again after the answer to the first try was lost (D-147). The
+    // database refuses a second publish, and this version being live is the
+    // result that was asked for.
+    if (code === "not_publishable") {
+      const { data: article } = await s.supabase.from("journal_articles").select("live_revision_id").eq("id", articleId).maybeSingle();
+      if (article?.live_revision_id === revisionId) {
+        refresh(articleId);
+        return { ok: true, notice: PUBLISHED_NOTICE };
+      }
+    }
+    if (code === "slug_taken" || code === "slug_required") return { fieldErrors: { slug: journalErrorMessage(error) } };
+    return refused(error, "publish");
+  }
+  refresh(articleId);
+  return { ok: true, notice: PUBLISHED_NOTICE };
 }
 
 export async function scheduleAction(_prev: JournalState, fd: FormData): Promise<JournalState> {
@@ -268,6 +309,10 @@ export async function scheduleAction(_prev: JournalState, fd: FormData): Promise
       },
     };
   }
+  const s = await staff();
+  if (!s) return NOT_STAFF;
+  const refusal = await featuredImageRefusal(s.supabase, str(fd, "revisionId"));
+  if (refusal) return refusal;
   return step(fd, "schedule", (s) => s.supabase.rpc("journal_schedule", {
     p_revision: str(fd, "revisionId"),
     p_expected_hash: str(fd, "contentHash"),

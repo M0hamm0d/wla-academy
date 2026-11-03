@@ -52,6 +52,13 @@ export type StudioListItem = {
   imported: boolean;
 };
 
+/** Tags on the articles this person can see, offered as suggestions. */
+export async function getKnownTags(): Promise<string[]> {
+  const { supabase } = await requireJournalStaff();
+  const { data } = await supabase.from("journal_revisions").select("tags").order("updated_at", { ascending: false }).limit(500);
+  return [...new Set((data ?? []).flatMap((r) => r.tags ?? []))].sort();
+}
+
 export async function listStudioArticles(): Promise<StudioListItem[]> {
   const { supabase } = await requireJournalStaff();
   const { data: articles } = await supabase.from("journal_articles").select("*").order("updated_at", { ascending: false });
