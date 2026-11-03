@@ -16,6 +16,7 @@ export function Dialog({
   title,
   children,
   role = "dialog",
+  size = "default",
 }: {
   open: boolean;
   onClose: () => void;
@@ -23,6 +24,8 @@ export function Dialog({
   children: ReactNode;
   /** "alertdialog" when the dialog asks to confirm a consequential action. */
   role?: "dialog" | "alertdialog";
+  /** "wide" for a dialog that holds a form to work through. */
+  size?: "default" | "wide";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -47,7 +50,7 @@ export function Dialog({
       aria-modal="true"
       // Escape: let React own the state rather than the element closing itself.
       onCancel={(e) => { e.preventDefault(); onClose(); }}
-      className="m-auto w-[min(34rem,calc(100vw-2*var(--space-m)))] rounded-[var(--radius-dialog)] border border-[var(--color-border-strong)] bg-[var(--color-background)] p-[var(--space-l)] text-[var(--color-text)] shadow-[var(--shadow-overlay)] backdrop:bg-[color-mix(in_srgb,var(--color-text)_35%,transparent)]"
+      className={`m-auto ${size === "wide" ? "w-[min(44rem,calc(100vw-2*var(--space-m)))]" : "w-[min(34rem,calc(100vw-2*var(--space-m)))]"} rounded-[var(--radius-dialog)] border border-[var(--color-border-strong)] bg-[var(--color-background)] p-[var(--space-l)] text-[var(--color-text)] shadow-[var(--shadow-overlay)] backdrop:bg-[color-mix(in_srgb,var(--color-text)_35%,transparent)]`}
     >
       {open && (
         <>

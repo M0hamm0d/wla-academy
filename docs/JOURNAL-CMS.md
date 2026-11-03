@@ -51,8 +51,8 @@ version: draft / in review".
   past decisions are kept; a version left in review returns to draft when next
   saved.
 - Only the **working** revision can be published, named by the content hash
-  the publisher last saw saved; a stale page is refused. The studio hides
-  Publish/Schedule while the editor has unsaved changes.
+  the publisher last saw saved; a stale page is refused. The studio saves
+  unsaved changes first, then publishes exactly that version.
 - Publishing needs a title, URL slug and body, and a slug no other article uses.
 - Every publish, unpublish, schedule, cancel, scheduler outcome and retry is
   in `journal_audit`, with the content hash.
@@ -63,21 +63,26 @@ version: draft / in review".
 
 - **One writing surface**, modelled on Substack's editor: a top bar with the
   status in words and every publishing action together — **Save draft ·
-  Share · Publish…** (the only primary button); then the toolbar, title,
-  subtitle, author and the article. History, Comments and **Settings** (web
-  address, category, tags, featured image, search details, dates) open in
-  side panels; Settings' fields belong to the same form, so one save keeps
-  everything.
+  Share · Publish** (the only primary button); then the toolbar, title,
+  subtitle, author and the article. History and Comments open in side panels.
+- **Article Settings** (D-147: featured image, web address, category, tags,
+  excerpt, date, search details): a sticky sidebar on a wide screen, and one
+  button in the top bar on a smaller one. Each setting has one value, held by
+  the studio and saved through the one form, so one save keeps everything.
 - **New article** opens an untitled draft straight away (D-136). Its web
   address follows the title until someone sets it by hand.
-- **Publish…** opens one dialog: *Now* or *At a later time* (UK time, echoed
-  in words; see §4). It saves unsaved changes first and publishes exactly that
-  saved version. It says what is missing (title, text, web address, images
-  still uploading) instead of offering a button that would fail.
+- **Publish** opens **Review Before Publishing** (D-147). Opening it changes
+  nothing, and anything corrected there is the editor's own value, kept by
+  **Back to Editing**. **Publish Article** is the only action: *Now* or *At a
+  later time* (UK time, echoed in words; see §4). It saves unsaved changes first
+  and publishes exactly that saved version. Missing details (title, text, web
+  address, an image's description, images still uploading) are listed with a way
+  to each, and the button waits. Once the server confirms, it goes to the articles
+  list, which says so; a failure stays in the review with everything intact.
 - **Editing a published article**: just edit. The first save creates a new
   draft from the live version (`journal_start_revision`); readers keep the
   published version, the status reads "Published · unpublished changes", and
-  **Publish update** replaces it. If someone else already started a newer
+  **Update Article** opens the same review and replaces it. If someone else already started a newer
   version, the save is refused as a conflict rather than saved over.
 - **Share** makes a **view-only preview link** (D-134): it shows the latest
   saved version to anyone holding it, for 30 days or until turned off; the

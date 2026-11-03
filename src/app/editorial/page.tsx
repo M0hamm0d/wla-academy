@@ -3,7 +3,9 @@ import Link from "next/link";
 import { AdminPage, DataTable, Td } from "@/components/admin/admin-page";
 import { FormNotice } from "@/components/ui/field";
 import { NewArticleButton } from "@/components/journal/studio/forms";
+import { PublishNoticeToast } from "@/components/journal/studio/publish-notice";
 import { getSchedulerStatus, listStudioArticles } from "@/features/journal/queries";
+import { publishNotice } from "@/features/journal/publish-notice";
 import { studioStatusWords } from "@/features/journal/status";
 import { requireJournalStaff } from "@/lib/permissions/journal";
 
@@ -19,12 +21,13 @@ type FilterKey = (typeof FILTERS)[number]["key"];
 const bucket = (words: string): FilterKey =>
   words.startsWith("Published") ? "published" : words === "Scheduled" ? "scheduled" : words === "Archived" ? "archived" : "draft";
 
-export default async function EditorialHome({ searchParams }: { searchParams: Promise<{ status?: string; notice?: string }> }) {
+export default async function EditorialHome({ searchParams }: { searchParams: Promise<{ status?: string; notice?: string; article?: string }> }) {
   const sp = await searchParams;
   const { caps } = await requireJournalStaff();
   const [all, scheduler] = await Promise.all([listStudioArticles(), getSchedulerStatus()]);
   const filter: FilterKey = FILTERS.some((f) => f.key === sp.status) ? (sp.status as FilterKey) : "all";
   const words = new Map(all.map((r) => [r.article.id, studioStatusWords(r.status)]));
+  const published = publishNotice(sp.notice, sp.article, all);
   const rows = filter === "all" ? all : all.filter((r) => bucket(words.get(r.article.id)!) === filter);
 
   return (
@@ -39,6 +42,7 @@ export default async function EditorialHome({ searchParams }: { searchParams: Pr
             : `${scheduler.overdue} scheduled ${scheduler.overdue === 1 ? "article is" : "articles are"} past due: the automatic publisher may be behind. It catches up on its next run.`}
         </p>
       )}
+      {published && <PublishNoticeToast notice={published} />}
       {sp.notice === "deleted" && <div className="mb-[var(--space-l)]"><FormNotice message="The draft was deleted." /></div>}
       {caps.canWrite && (
         <div className="mb-[var(--space-xl)]"><NewArticleButton /></div>

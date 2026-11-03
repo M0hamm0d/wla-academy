@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { History } from "@/components/journal/studio/history";
 import { ArticleStudio } from "@/components/journal/studio/article-studio";
 import { CommentsPanel } from "@/components/journal/studio/side-panels";
-import { getCategories, getSchedulerStatus, getStaffDirectory, getStudioArticle } from "@/features/journal/queries";
+import { getCategories, getKnownTags, getSchedulerStatus, getStaffDirectory, getStudioArticle } from "@/features/journal/queries";
 import { journalSiteOrigin, publicArticleUrl } from "@/features/journal/public-url";
 import { studioStatusWords } from "@/features/journal/status";
 import { formatLondon } from "@/features/journal/time";
@@ -23,7 +23,7 @@ export default async function StudioArticlePage({ params }: { params: Promise<{ 
   const { id } = await params;
   if (!UUID.test(id)) notFound();
   const { caps, user } = await requireJournalStaff();
-  const [data, staff, categories, scheduler] = await Promise.all([getStudioArticle(id), getStaffDirectory(), getCategories(), getSchedulerStatus()]);
+  const [data, staff, categories, scheduler, knownTags] = await Promise.all([getStudioArticle(id), getStaffDirectory(), getCategories(), getSchedulerStatus(), getKnownTags()]);
   if (!data) notFound();
 
   const { article, working, live, revisions, members, decisions, comments, changes, audit, media, previewLinks, status } = data;
@@ -93,6 +93,7 @@ export default async function StudioArticlePage({ params }: { params: Promise<{ 
       everPublished={Boolean(article.first_published_at)}
       publicSiteOrigin={journalSiteOrigin()}
       categories={categories.map((c) => ({ id: c.id, name: c.name }))}
+      knownTags={knownTags}
       media={media.map((m) => ({ id: m.id, alt: m.alt_text }))}
       previewLinks={previewLinks.map((l) => ({ id: l.id, createdAt: l.created_at, expiresAt: l.expires_at, by: nameOf(l.created_by) }))}
       people={{

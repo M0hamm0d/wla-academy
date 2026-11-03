@@ -8,6 +8,7 @@ running with `WLA_DEV_MAILPIT_URL` set, and Stripe keys must be test-mode.
 node scripts/browser/local/journeys-access.mjs   # child codes: view, replace, rotate the key
 node scripts/browser/local/journeys-gift.mjs     # purchase, inline child, gifts by link and by code
 node scripts/browser/local/journeys-cover.mjs    # cover upload, display everywhere, sharing, permissions
+node scripts/browser/local/journeys-journal.mjs  # Article Settings, review, publish, update, failure, phone width
 ```
 
 Each creates its own accounts (`e2e-<run>-...@wla-e2e.test`) through the real pages,
