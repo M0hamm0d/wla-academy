@@ -12,10 +12,11 @@ type Row = Record<string, unknown>;
 const db: {
   mission: Row | null;
   entitlement: Row | null;
-  intents: { stripe_session_id: string }[];
+  intents: Row[];
 } = { mission: null, entitlement: null, intents: [] };
 const adminWrites: { table: string; op: string; row: Row }[] = [];
 let failIntentInsert = false;
+let failIntentUpdate = false;
 
 const stripeSessions = {
   create: vi.fn(),
@@ -32,6 +33,9 @@ vi.mock("@/lib/env", () => ({ stripeEnv: () => ({ STRIPE_SECRET_KEY: "sk_test_x"
 
 /** A query builder whose every filter returns itself; terminal reads resolve per table. */
 function query(table: string) {
+  const filters: Record<string, unknown> = {};
+  let inserted: Row | null = null;
+  let updated: Row | null = null;
   const result = () => {
     if (table === "missions") return { data: db.mission };
     if (table === "mission_entitlements") return { data: db.entitlement };
@@ -39,9 +43,30 @@ function query(table: string) {
     return { data: null };
   };
   const q: Record<string, unknown> = {};
-  for (const m of ["select", "eq", "gte", "order", "limit"]) q[m] = () => q;
-  q.maybeSingle = async () => result();
-  q.then = (resolve: (v: unknown) => void) => resolve(result());
+  for (const m of ["select", "gte", "order", "limit", "in"]) q[m] = () => q;
+  q.eq = (key: string, value: unknown) => { filters[key] = value; return q; };
+  q.insert = (row: Row) => { inserted = row; adminWrites.push({ table, op: "insert", row }); return q; };
+  q.update = (row: Row) => { updated = row; adminWrites.push({ table, op: "update", row }); return q; };
+  q.maybeSingle = async () => {
+    if (inserted) {
+      if (failIntentInsert) return { data: null, error: { code: "XX", message: "insert failed" } };
+      if (db.intents.some((i) => i.checkout_status === "open" || i.checkout_status === "initializing")) return { data: null, error: { code: "23505", message: "conflict" } };
+      const attempt = { ...inserted, id: "intent-1", attempt_key: "attempt-1", stripe_session_id: null, created_at: new Date().toISOString() };
+      db.intents.push(attempt);
+      return { data: attempt, error: null };
+    }
+    if (table === "checkout_intents" && Object.keys(filters).length) {
+      return { data: db.intents.find((i) => Object.entries(filters).every(([k, v]) => i[k] === v)) ?? null, error: null };
+    }
+    return result();
+  };
+  q.then = (resolve: (v: unknown) => void) => {
+    if (failIntentUpdate && updated && table === "checkout_intents") return resolve({ data: null, error: { message: "update failed" } });
+    if (updated && table === "checkout_intents") {
+      db.intents.filter((i) => Object.entries(filters).every(([k, v]) => i[k] === v)).forEach((i) => Object.assign(i, updated));
+    }
+    resolve({ data: null, error: null });
+  };
   return q;
 }
 
@@ -57,10 +82,7 @@ vi.mock("@/lib/permissions", () => ({
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
     from: (table: string) => ({
-      insert: async (row: Row) => {
-        adminWrites.push({ table, op: "insert", row });
-        return { error: failIntentInsert ? { message: "insert failed" } : null };
-      },
+      ...query(table),
       upsert: async (row: Row) => {
         adminWrites.push({ table, op: "upsert", row });
         return { error: null };
@@ -79,18 +101,51 @@ beforeEach(() => {
   db.intents = [];
   adminWrites.length = 0;
   failIntentInsert = false;
+  failIntentUpdate = false;
   for (const fn of Object.values(stripeSessions)) fn.mockReset();
   stripeSessions.create.mockResolvedValue({ id: "cs_new", url: "https://checkout.stripe.example/cs_new" });
 });
 
 describe("a fresh purchase", () => {
+  it("retries a timed-out Stripe create with the same database attempt and idempotency key", async () => {
+    stripeSessions.create.mockRejectedValueOnce(new Error("timeout"));
+    await expect(go()).rejects.toMatchObject({ reason: "provider" });
+    const firstOptions = stripeSessions.create.mock.calls[0][1];
+    await go();
+    expect(db.intents).toHaveLength(1);
+    expect(stripeSessions.create.mock.calls[1][1]).toEqual(firstOptions);
+  });
+
+  it("expires an unreturned Stripe session if recording its ID fails, then can recover by retry", async () => {
+    failIntentUpdate = true;
+    stripeSessions.expire.mockResolvedValue({ status: "expired" });
+    await expect(go()).rejects.toMatchObject({ reason: "provider" });
+    expect(stripeSessions.expire).toHaveBeenCalledWith("cs_new");
+    failIntentUpdate = false;
+    stripeSessions.create.mockResolvedValueOnce({ id: "cs_new", url: "https://checkout.stripe.example/cs_new", status: "expired" });
+    await expect(go()).rejects.toMatchObject({ reason: "provider" }); // Stripe returns the now-expired idempotent session
+    expect(db.intents).toHaveLength(1);
+  });
+
+  it("arbitrates simultaneous submits to one DB attempt and one Stripe idempotency identity", async () => {
+    const [a, b] = await Promise.all([go(), go()]);
+    expect(a).toMatchObject({ kind: "checkout" });
+    expect(b).toMatchObject({ kind: "checkout" });
+    expect(db.intents).toHaveLength(1);
+    expect(stripeSessions.create).toHaveBeenCalledTimes(2);
+    expect(stripeSessions.create.mock.calls[0][1]).toEqual(stripeSessions.create.mock.calls[1][1]);
+    expect(stripeSessions.create.mock.calls[0][1].idempotencyKey).toBe("wla-mission-attempt-1");
+  });
+
   it("is tied to the authenticated parent and the verified child, recorded before leaving", async () => {
     const r = await go();
     expect(r).toEqual({ kind: "checkout", childId: "child-1", url: "https://checkout.stripe.example/cs_new" });
 
     const sent = stripeSessions.create.mock.calls[0][0];
     expect(sent.line_items[0].price_data).toMatchObject({ currency: "gbp", unit_amount: 1200 });
-    expect(sent.metadata).toEqual({ child_id: "child-1", mission_id: "m-1", parent_id: "parent-1" });
+    expect(sent.metadata).toEqual({ checkout_intent_id: "intent-1", child_id: "child-1", mission_id: "m-1", parent_id: "parent-1" });
+    expect(sent.client_reference_id).toBe("intent-1");
+    expect(stripeSessions.create.mock.calls[0][1]).toEqual({ idempotencyKey: "wla-mission-attempt-1" });
     // The return lands on the wording that says the mission WILL appear.
     expect(sent.success_url).toBe("https://academy.example/academy/my-missions?purchase=success");
     expect(sent.cancel_url).toBe("https://academy.example/purchase/mars-bridge?cancelled=1");
@@ -99,8 +154,9 @@ describe("a fresh purchase", () => {
       {
         table: "checkout_intents",
         op: "insert",
-        row: { stripe_session_id: "cs_new", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP" },
+        row: expect.objectContaining({ parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP", checkout_status: "initializing" }),
       },
+      expect.objectContaining({ table: "checkout_intents", op: "update", row: { stripe_session_id: "cs_new", checkout_status: "open" } }),
     ]);
     // Never an entitlement from here — only the webhook grants a paid one.
     expect(adminWrites.some((w) => w.table === "mission_entitlements")).toBe(false);
@@ -138,33 +194,35 @@ describe("no confusing duplicate access", () => {
   });
 
   it("paid but the webhook has not arrived: no second Checkout", async () => {
-    db.intents = [{ stripe_session_id: "cs_paid" }];
+    db.intents = [{ id: "intent-1", attempt_key: "attempt-1", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", created_at: new Date().toISOString(), checkout_status: "open", stripe_session_id: "cs_paid", amount_minor: 1200, currency: "GBP", mission_title: "Mars Bridge", mission_description: null, mission_slug: "mars-bridge", customer_email: "parent@example.test" }];
     stripeSessions.retrieve.mockResolvedValue({ id: "cs_paid", status: "complete", payment_status: "paid" });
-    expect(await go()).toEqual({ kind: "processing", childId: "child-1" });
+    await expect(go()).rejects.toMatchObject({ reason: "provider" });
     expect(stripeSessions.create).not.toHaveBeenCalled();
     // And still no entitlement from the browser path.
-    expect(adminWrites).toHaveLength(0);
+    expect(adminWrites).toHaveLength(0); // prior active attempt is reused
   });
 
-  it("an abandoned session that is still open is expired, so only the new one can be paid", async () => {
-    db.intents = [{ stripe_session_id: "cs_open" }];
-    stripeSessions.retrieve.mockResolvedValue({ id: "cs_open", status: "open", payment_status: "unpaid" });
+  it("reuses an existing open session instead of expiring it", async () => {
+    db.intents = [{ id: "intent-1", attempt_key: "attempt-1", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", created_at: new Date().toISOString(), checkout_status: "open", stripe_session_id: "cs_open", amount_minor: 1200, currency: "GBP", mission_title: "Mars Bridge", mission_description: null, mission_slug: "mars-bridge", customer_email: "parent@example.test" }];
+    stripeSessions.retrieve.mockResolvedValue({ id: "cs_open", status: "open", payment_status: "unpaid", url: "https://checkout.stripe.example/cs_open" });
     const r = await go();
-    expect(stripeSessions.expire).toHaveBeenCalledWith("cs_open");
-    expect(r.kind).toBe("checkout");
+    expect(stripeSessions.expire).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ kind: "checkout", url: "https://checkout.stripe.example/cs_open" });
+    expect(stripeSessions.create).not.toHaveBeenCalled();
   });
 
-  it("an expired or cancelled earlier session is left alone and does not block buying", async () => {
-    db.intents = [{ stripe_session_id: "cs_expired" }];
+  it("an expired session is marked and requires a fresh submission", async () => {
+    db.intents = [{ id: "intent-1", attempt_key: "attempt-1", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", created_at: new Date().toISOString(), checkout_status: "open", stripe_session_id: "cs_expired", amount_minor: 1200, currency: "GBP", mission_title: "Mars Bridge", mission_description: null, mission_slug: "mars-bridge", customer_email: "parent@example.test" }];
     stripeSessions.retrieve.mockResolvedValue({ id: "cs_expired", status: "expired", payment_status: "unpaid" });
-    expect((await go()).kind).toBe("checkout");
+    await expect(go()).rejects.toMatchObject({ reason: "provider" });
     expect(stripeSessions.expire).not.toHaveBeenCalled();
   });
 
-  it("Stripe unreachable while checking: the purchase still starts", async () => {
-    db.intents = [{ stripe_session_id: "cs_unknown" }];
+  it("Stripe unreachable while checking never opens another payable session", async () => {
+    db.intents = [{ id: "intent-1", attempt_key: "attempt-1", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", created_at: new Date().toISOString(), checkout_status: "open", stripe_session_id: "cs_unknown", amount_minor: 1200, currency: "GBP", mission_title: "Mars Bridge", mission_description: null, mission_slug: "mars-bridge", customer_email: "parent@example.test" }];
     stripeSessions.retrieve.mockRejectedValue(new Error("network"));
-    expect((await go()).kind).toBe("checkout");
+    await expect(go()).rejects.toMatchObject({ reason: "provider" });
+    expect(stripeSessions.create).not.toHaveBeenCalled();
   });
 });
 
@@ -178,13 +236,12 @@ describe("free missions", () => {
 });
 
 describe("an unrecorded Checkout is never handed to the parent", () => {
-  it("expires the session and fails before any payment when the intent cannot be written", async () => {
+  it("fails before contacting Stripe when the pending intent cannot be written", async () => {
     failIntentInsert = true;
     stripeSessions.expire.mockResolvedValue({});
     // Without the intent the webhook would take the money and grant nothing.
     await expect(go()).rejects.toMatchObject({ name: "CheckoutError", reason: "provider" });
-    expect(stripeSessions.create).toHaveBeenCalledTimes(1);
-    expect(stripeSessions.expire).toHaveBeenCalledWith("cs_new");
+    expect(stripeSessions.create).not.toHaveBeenCalled();
   });
 
   it("still fails closed if Stripe cannot expire it", async () => {

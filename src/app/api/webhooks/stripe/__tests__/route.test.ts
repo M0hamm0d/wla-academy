@@ -45,6 +45,7 @@ const db: {
 
 vi.mock("@/lib/env", () => ({
   stripeEnv: () => ({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }),
+  siteUrl: () => "https://academy.test",
 }));
 vi.mock("@/features/commerce/checkout", () => ({
   stripe: () => ({
@@ -158,7 +159,7 @@ const { POST } = await import("../route");
 const { sendMissionAccessEmail } = await import("@/lib/email/send");
 const { logError } = await import("@/lib/observability/logger");
 
-const INTENT = { child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP" };
+const INTENT = { id: "intent-1", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP", checkout_status: "open" };
 
 function deliver({
   id = "evt_1",
@@ -172,10 +173,15 @@ function deliver({
     data: {
       object: {
         id: "cs_1",
+        mode: "payment",
+        client_reference_id: db.gifts.length ? "gift-1" : "intent-1",
         payment_status: "paid",
         amount_total: 1200,
         currency: "gbp",
         payment_intent: "pi_1",
+        metadata: db.gifts.length
+          ? { gift: "1", gift_id: "gift-1", mission_id: "mission-1", parent_id: "parent-1" }
+          : { checkout_intent_id: "intent-1", mission_id: "m-1", child_id: "child-1", parent_id: "parent-1" },
         ...session,
       },
     },
@@ -378,10 +384,11 @@ describe("resolving the checkout intent", () => {
     expect(db.entitlements).toEqual([]);
   });
 
-  it("the child comes from our intent, not from Stripe metadata", async () => {
+  it("rejects a Checkout whose child metadata disagrees with the authoritative intent", async () => {
     const res = await deliver({ session: { metadata: { child_id: "someone-else" } } });
     expect(res.status).toBe(200);
-    expect(db.entitlements).toEqual([expect.objectContaining({ child_id: "child-1" })]);
+    expect(await res.json()).toMatchObject({ mismatch: true });
+    expect(db.entitlements).toEqual([]);
   });
 });
 
@@ -422,7 +429,7 @@ describe("only a verified, paid, matching payment grants access", () => {
 
 describe("a gift (D-140)", () => {
   const GIFT = {
-    id: "gift-1", mission_id: "mission-1", recipient_email: "r@example.test", stripe_session_id: "cs_1",
+    id: "gift-1", purchaser_id: "parent-1", mission_id: "mission-1", recipient_email: "r@example.test", stripe_session_id: "cs_1",
     amount_minor: 1200, currency: "GBP", status: "pending", link_sent_at: null,
   };
   beforeEach(() => {

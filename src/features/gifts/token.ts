@@ -24,5 +24,9 @@ export function looksLikeGiftToken(value: string | null | undefined): value is s
 
 /** The one rule for comparing addresses; the column stores this form. */
 export function normaliseGiftEmail(email: string): string {
-  return email.trim().toLowerCase();
+  const normalised = email.trim().toLowerCase();
+  if (normalised.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalised)) {
+    throw new Error("Invalid gift email address.");
+  }
+  return normalised;
 }

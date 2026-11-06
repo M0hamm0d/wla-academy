@@ -2,12 +2,12 @@
 
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { headers } from "next/headers";
 import { acquireMission, CheckoutError } from "./checkout";
 import { AccessError } from "@/lib/permissions";
 import { setActiveChild } from "@/features/children/active-child";
 import type { FormState } from "@/features/auth/schemas";
 import { logError } from "@/lib/observability/logger";
+import { siteUrl } from "@/lib/env";
 
 /**
  * Acquire a mission for a child.
@@ -42,7 +42,7 @@ export async function acquireMissionAction(
     result = await acquireMission({
       childId,
       missionSlug,
-      origin: await requestOrigin(),
+      origin: siteUrl(),
     });
   } catch (error) {
     if (error instanceof AccessError) {
@@ -80,11 +80,4 @@ export async function acquireMissionAction(
   }
 
   redirect(result.url);
-}
-
-async function requestOrigin(): Promise<string> {
-  const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host");
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  return `${proto}://${host}`;
 }

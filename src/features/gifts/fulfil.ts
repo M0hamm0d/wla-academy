@@ -4,6 +4,7 @@ import { sendGiftCodeEmail, sendGiftEmail } from "@/lib/email/send";
 import { logError, logWarn } from "@/lib/observability/logger";
 import type { createAdminClient } from "@/lib/supabase/admin";
 import { hashGiftToken, newGiftToken } from "./token";
+import { siteUrl } from "@/lib/env";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
@@ -18,11 +19,12 @@ export type GiftForFulfilment = {
   currency: string;
   status: "pending" | "paid" | "redeemed";
   link_sent_at: string | null;
+  email_delivery_locked_until?: string | null;
 };
 
 function redeemUrl(token: string): string | null {
-  const origin = process.env.NEXT_PUBLIC_SITE_URL;
-  if (!origin) return null;
+  let origin: string;
+  try { origin = siteUrl(); } catch { return null; }
   return `${origin.replace(/\/$/, "")}/redeem?token=${encodeURIComponent(token)}`;
 }
 
@@ -55,6 +57,11 @@ export async function fulfilPaidGift(
 ): Promise<void> {
   if (gift.status === "redeemed") return;
   if (gift.status === "paid" && gift.link_sent_at) return;
+  if (gift.email_delivery_locked_until && new Date(gift.email_delivery_locked_until).getTime() > Date.now()) {
+    // Keep the Stripe delivery retryable if another webhook worker owns the
+    // delivery lease, or if the previous worker died while sending.
+    throw new Error("gift_delivery_in_progress");
+  }
 
   const { token, hash } = newGiftToken();
 
@@ -66,6 +73,7 @@ export async function fulfilPaidGift(
         redeem_token_hash: hash,
         paid_at: new Date().toISOString(),
         stripe_payment_intent_id: paymentIntentId,
+        email_delivery_locked_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
       })
       .eq("id", gift.id)
       .eq("status", "pending")
@@ -74,20 +82,29 @@ export async function fulfilPaidGift(
     // Another delivery got there first, and it sends the email.
     if (!data || data.length === 0) return;
   } else {
-    const { data, error } = await admin
+    let claim = admin
       .from("mission_gifts")
-      .update({ redeem_token_hash: hash, confirm_failures: 0 })
+      .update({
+        redeem_token_hash: hash,
+        confirm_failures: 0,
+        email_delivery_locked_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      })
       .eq("id", gift.id)
       .eq("status", "paid")
-      .is("link_sent_at", null)
-      .select("id");
+      .is("link_sent_at", null);
+    claim = gift.email_delivery_locked_until
+      ? claim.lt("email_delivery_locked_until", new Date().toISOString())
+      : claim.is("email_delivery_locked_until", null);
+    const { data, error } = await claim.select("id");
     if (error) throw error;
     if (!data || data.length === 0) return;
   }
 
   const delivery = await deliverLink(admin, gift, token);
-  if (!delivery.sent && isWorthRetrying(delivery.reason)) {
-    throw new Error("gift_email_retry");
+  if (!delivery.sent) {
+    const { error } = await admin.from("mission_gifts").update({ email_delivery_locked_until: null }).eq("id", gift.id).is("link_sent_at", null);
+    if (error) logError("gift_email_lease_release_failed", error, { giftId: gift.id });
+    if (isWorthRetrying(delivery.reason)) throw new Error("gift_email_retry");
   }
 }
 
@@ -119,7 +136,7 @@ async function deliverLink(
     }
     const { error } = await admin
       .from("mission_gifts")
-      .update({ link_sent_at: new Date().toISOString() })
+      .update({ link_sent_at: new Date().toISOString(), email_delivery_locked_until: null })
       .eq("id", gift.id);
     if (error) logError("gift_link_sent_unrecorded", error, { giftId: gift.id });
     return { sent: true };

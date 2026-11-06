@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 /**
  * STRUCTURAL GUARDS
@@ -47,7 +47,7 @@ describe("child-scoped data access", () => {
     const files = listSourceFiles(root);
 
     for (const file of files) {
-      const rel = file.replace(root + "/", "");
+      const rel = relative(root, file).replaceAll("\\", "/");
       if (allowed.some((a) => rel.endsWith(a))) continue;
       if (rel.includes("__tests__")) continue;
 
