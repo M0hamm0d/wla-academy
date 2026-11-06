@@ -28,6 +28,13 @@ const stripeSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().min(1),
 });
 
+const siteUrlSchema = z.string().url().transform((value) => {
+  const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash) return "";
+  if (process.env.NODE_ENV === "production" && url.protocol !== "https:") return "";
+  return url.origin;
+});
+
 export type SupabaseServerEnv = z.infer<typeof supabaseSchema>;
 export type StripeEnv = z.infer<typeof stripeSchema>;
 
@@ -55,6 +62,13 @@ export function supabaseServerEnv(): SupabaseServerEnv {
 export function stripeEnv(): StripeEnv {
   stripeCache ??= parse(stripeSchema, "Stripe");
   return stripeCache;
+}
+
+/** Trusted server origin for payment redirects and absolute transactional links. */
+export function siteUrl(): string {
+  const result = siteUrlSchema.safeParse(process.env.SITE_URL);
+  if (!result.success || !result.data) throw new Error("Missing or invalid SITE_URL environment variable. See .env.example.");
+  return result.data;
 }
 
 export const publicEnv = {

@@ -97,7 +97,15 @@ export type MissionGiftRow = {
   mission_id: string;
   purchaser_id: string | null;
   recipient_email: string;
-  stripe_session_id: string;
+  stripe_session_id: string | null;
+  attempt_key: string | null;
+  checkout_status: "initializing" | "open" | "paid" | "expired" | "failed";
+  mission_title: string | null;
+  mission_description: string | null;
+  mission_slug: string | null;
+  customer_email: string | null;
+  site_origin: string | null;
+  email_delivery_locked_until: string | null;
   stripe_payment_intent_id: string | null;
   amount_minor: number;
   currency: string;
@@ -257,7 +265,14 @@ export type ReviewRow = {
 
 export type CheckoutIntentRow = {
   id: string;
-  stripe_session_id: string;
+  stripe_session_id: string | null;
+  attempt_key: string | null;
+  checkout_status: "initializing" | "open" | "paid" | "expired" | "failed";
+  mission_title: string | null;
+  mission_description: string | null;
+  mission_slug: string | null;
+  customer_email: string | null;
+  site_origin: string | null;
   parent_id: string;
   child_id: string;
   mission_id: string;
@@ -649,11 +664,10 @@ export type Database = {
       };
       mission_gifts: Table<
         MissionGiftRow,
-        "mission_id" | "recipient_email" | "stripe_session_id" | "amount_minor" | "currency"
+        "mission_id" | "recipient_email" | "amount_minor" | "currency"
       >;
       checkout_intents: Table<
         CheckoutIntentRow,
-        | "stripe_session_id"
         | "parent_id"
         | "child_id"
         | "mission_id"
@@ -766,6 +780,10 @@ export type Database = {
      * transaction — see supabase/migrations/20260925220200_persistence.sql.
      */
     Functions: {
+      consume_gift_request_limit: {
+        Args: { p_ip: string; p_email: string; p_send: boolean };
+        Returns: boolean;
+      };
       // ------------------------------------------------ journal (D-123…) --
       journal_staff_directory: {
         Args: Record<string, never>;

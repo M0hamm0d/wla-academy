@@ -73,7 +73,7 @@ describe("child assignment", () => {
     expect(webhook).toContain('from("checkout_intents")');
     expect(webhook).toContain('.eq("stripe_session_id", session.id)');
     expect(webhook).toContain("intent.child_id");
-    expect(webhook).not.toContain("session.metadata?.child_id");
+    expect(webhook).toContain("session.metadata?.child_id !== intent.child_id");
   });
 
   it("an unowned child id fails without revealing that it exists", () => {
@@ -196,7 +196,7 @@ describe("entitlement creation", () => {
       "src/features/commerce/checkout.ts",
     ];
     for (const file of sourceFiles(join(repo, "src"))) {
-      const rel = file.replace(repo + "/", "");
+      const rel = file.slice(repo.length + 1).replaceAll("\\", "/");
       if (allowed.includes(rel)) continue;
       expect(
         readFileSync(file, "utf8"),

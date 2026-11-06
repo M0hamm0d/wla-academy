@@ -16,12 +16,23 @@ import { emailCodeFor, emailLinksFor } from "./fulfil";
 import { confirmGiftCode, confirmGiftEmail } from "./redeem";
 import { confirmEmailSchema, giftCodeSchema, recipientEmailSchema } from "./schemas";
 import { hashGiftToken, looksLikeGiftToken, normaliseGiftEmail } from "./token";
+import { siteUrl } from "@/lib/env";
 
-async function requestOrigin(): Promise<string> {
+async function giftRequestAllowed(email: string, sending: boolean): Promise<boolean> {
   const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host");
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  return `${proto}://${host}`;
+  // Vercel supplies x-real-ip at the edge. x-forwarded-for is a fallback for
+  // local deployments; only its first (client) address is passed to a hash-only DB bucket.
+  const ip = h.get("x-real-ip") ?? h.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const { data, error } = await createAdminClient().rpc("consume_gift_request_limit", {
+    p_ip: ip,
+    p_email: email,
+    p_send: sending,
+  });
+  if (error) {
+    logError("gift_request_rate_limit_failed", error);
+    return false;
+  }
+  return data === true;
 }
 
 /** "Give as a gift?" on the purchase page: on to Stripe, granting nothing. */
@@ -40,7 +51,7 @@ export async function giftMissionAction(
     result = await purchaseGift({
       missionSlug,
       recipientEmail: parsed.data,
-      origin: await requestOrigin(),
+      origin: siteUrl(),
     });
   } catch (error) {
     if (error instanceof CheckoutError) return { error: error.message };
@@ -71,7 +82,7 @@ const CODE_SENT_NOTICE =
   "If a gift was sent to that address, we've emailed it a code. Enter it below.";
 const CODE_REFUSED =
   "That code isn't right, or it has expired. Check it, or ask for a new one.";
-/** A wrong code writes to the database and no gift doesn't. Answer in one time. */
+/** Minimum response time helps reduce timing differences; database limits do the throttling. */
 const CODE_ANSWER_FLOOR_MS = 400;
 
 /**
@@ -88,7 +99,7 @@ export async function requestGiftCodeAction(
     return { fieldErrors: { email: parsed.error.issues[0]?.message ?? "Enter a valid email address." } };
   }
   const email = normaliseGiftEmail(parsed.data);
-  after(() => emailCodeFor(createAdminClient(), email));
+  if (await giftRequestAllowed(email, true)) after(() => emailCodeFor(createAdminClient(), email));
   return { email, notice: CODE_SENT_NOTICE };
 }
 
@@ -104,6 +115,7 @@ export async function confirmGiftCodeAction(
   const email = confirmEmailSchema.safeParse(formData.get("email") ?? "");
   if (!email.success) return { error: "Please enter your email address again." };
   const kept = { email: normaliseGiftEmail(email.data) };
+  if (!(await giftRequestAllowed(kept.email, false))) return { ...kept, error: CODE_REFUSED };
 
   const code = giftCodeSchema.safeParse(formData.get("code") ?? "");
   if (!code.success) {
@@ -150,16 +162,19 @@ export async function confirmGiftEmailAction(
 
   if (!token) {
     const email = normaliseGiftEmail(parsed.data);
-    after(() => emailLinksFor(createAdminClient(), email));
+    if (await giftRequestAllowed(email, true)) after(() => emailLinksFor(createAdminClient(), email));
     return {
       notice:
         "If a gift was sent to that address, we've emailed it a link to redeem it. Please check your inbox.",
     };
   }
 
+  const normalisedEmail = normaliseGiftEmail(parsed.data);
+  if (!(await giftRequestAllowed(normalisedEmail, false))) return { error: "That gift link isn't valid any more. Please try again later." };
+
   let check: Awaited<ReturnType<typeof confirmGiftEmail>>;
   try {
-    check = await confirmGiftEmail(token, parsed.data);
+    check = await confirmGiftEmail(token, normalisedEmail);
   } catch (error) {
     logError("gift_confirm_failed", error);
     return { error: "We couldn't check that just now. Please try again." };
@@ -204,6 +219,7 @@ export async function redeemGiftAction(
     userId = user.id;
     await requireOwnedChild(childId); // never trust the submitted id
   } catch (error) {
+    if (error instanceof AccessError && error.reason === "unauthenticated") redirect("/login?next=%2Fredeem");
     if (error instanceof AccessError) return { error: "Choose who this mission is for." };
     throw error;
   }

@@ -17,6 +17,7 @@ export const childProfileSchema = z.object({
     .string()
     .trim()
     .min(1, "Enter a name.")
+    .regex(/^\S+$/u, "Enter one first name or nickname only.")
     .max(40, "That name is a little long."),
   /**
    * Year of birth, not a full date — enough to show an age band without

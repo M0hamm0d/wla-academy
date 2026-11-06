@@ -106,6 +106,18 @@ describe("adding a child with an access code", () => {
     expect(issue).not.toHaveBeenCalled();
   });
 
+  it("rejects more than one name before touching the database", async () => {
+    const state = await createChildAction(
+      {},
+      form({ displayName: "Amina Yusuf", accessCode: "on" }),
+    );
+    expect(state.fieldErrors?.displayName).toBe(
+      "Enter one first name or nickname only.",
+    );
+    expect(inserted).toHaveLength(0);
+    expect(issue).not.toHaveBeenCalled();
+  });
+
   it("carries a safe next= (back to a purchase) and drops an unsafe one", async () => {
     const ok = await createChildAction({}, form({ displayName: "Amina", next: "/purchase/mars-bridge" }));
     expect(ok.next).toBe("/purchase/mars-bridge");

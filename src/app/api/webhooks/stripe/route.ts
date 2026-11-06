@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { fulfilPaidGift } from "@/features/gifts/fulfil";
 import { sendMissionAccessEmail } from "@/lib/email/send";
 import { logError, logWarn } from "@/lib/observability/logger";
+import { siteUrl } from "@/lib/env";
 
 /**
  * THE ENTITLEMENT BOUNDARY — Tech Spec §40.
@@ -106,6 +107,10 @@ export async function POST(request: Request) {
   if (session.payment_status !== "paid") {
     return NextResponse.json({ received: true, unpaid: true });
   }
+  if (session.mode !== "payment" || !session.id || !session.amount_total || !session.currency) {
+    logWarn("stripe_checkout_shape_invalid", { sessionId: session.id });
+    return NextResponse.json({ received: true, invalid: true });
+  }
 
   /*
    * Resolve the intended child from OUR record, not from Stripe metadata.
@@ -114,7 +119,7 @@ export async function POST(request: Request) {
    */
   const { data: intent, error: intentError } = await admin
     .from("checkout_intents")
-    .select("child_id, mission_id, amount_minor, currency")
+    .select("id, parent_id, child_id, mission_id, amount_minor, currency, checkout_status")
     .eq("stripe_session_id", session.id)
     .maybeSingle();
 
@@ -136,7 +141,7 @@ export async function POST(request: Request) {
     // A gift has no child yet, so no intent: it has its own record (D-140).
     const { data: gift, error: giftError } = await admin
       .from("mission_gifts")
-      .select("id, mission_id, recipient_email, amount_minor, currency, status, link_sent_at")
+      .select("id, purchaser_id, mission_id, recipient_email, amount_minor, currency, status, link_sent_at, checkout_status, email_delivery_locked_until")
       .eq("stripe_session_id", session.id)
       .maybeSingle();
 
@@ -147,6 +152,12 @@ export async function POST(request: Request) {
     }
 
     if (gift) {
+      if (session.client_reference_id !== gift.id || session.metadata?.gift_id !== gift.id ||
+          session.metadata?.gift !== "1" || session.metadata?.mission_id !== gift.mission_id ||
+          (gift.purchaser_id && session.metadata?.parent_id !== gift.purchaser_id)) {
+        logWarn("stripe_gift_association_mismatch", { sessionId: session.id, giftId: gift.id });
+        return NextResponse.json({ received: true, mismatch: true });
+      }
       if (
         session.amount_total !== gift.amount_minor ||
         session.currency?.toUpperCase() !== gift.currency.toUpperCase()
@@ -171,6 +182,14 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "Gift failed" }, { status: 500 });
       }
 
+      const { error: stateError } = await admin.from("mission_gifts")
+        .update({ checkout_status: "paid" }).eq("id", gift.id).eq("status", "paid");
+      if (stateError) {
+        logError("stripe_gift_checkout_state_failed", stateError, { giftId: gift.id });
+        if (!duplicate) await releaseClaim(admin, event);
+        return NextResponse.json({ error: "Gift state failed" }, { status: 500 });
+      }
+
       return duplicate
         ? NextResponse.json({ received: true, duplicate: true })
         : NextResponse.json({ received: true });
@@ -179,6 +198,23 @@ export async function POST(request: Request) {
     // OPS-01. Neither a purchase nor a gift: nothing to grant, but visible.
     logWarn("stripe_no_checkout_intent", { sessionId: session.id });
     return NextResponse.json({ received: true, unmatched: true });
+  }
+
+  if (session.client_reference_id !== intent.id || session.metadata?.checkout_intent_id !== intent.id ||
+      session.metadata?.mission_id !== intent.mission_id || session.metadata?.child_id !== intent.child_id ||
+      session.metadata?.parent_id !== intent.parent_id) {
+    logWarn("stripe_mission_association_mismatch", { sessionId: session.id, intentId: intent.id });
+    return NextResponse.json({ received: true, mismatch: true });
+  }
+  const { data: childOwner, error: ownerError } = await admin.from("child_profiles")
+    .select("parent_id").eq("id", intent.child_id).maybeSingle();
+  if (ownerError) {
+    if (!duplicate) await releaseClaim(admin, event);
+    return NextResponse.json({ error: "Ownership lookup failed" }, { status: 500 });
+  }
+  if (!childOwner || childOwner.parent_id !== intent.parent_id) {
+    logError("stripe_intent_ownership_mismatch", new Error("intent parent does not own child"), { sessionId: session.id });
+    return NextResponse.json({ received: true, mismatch: true });
   }
 
   // Reconciliation: what Stripe collected must match what we recorded.
@@ -201,7 +237,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true, mismatch: true });
   }
 
-  // Service-role: the purchaser may not have an active session right now.
+  // Trusted server client: the purchaser may not have an active session right now.
   // ON CONFLICT DO NOTHING ... RETURNING: `inserted` is empty when the row
   // already existed, so a duplicate or concurrent delivery grants nothing new.
   const { data: inserted, error } = await admin
@@ -244,6 +280,14 @@ export async function POST(request: Request) {
     await notifyAccessGranted(admin, intent.child_id, intent.mission_id);
   } else {
     await flagIfRevoked(admin, intent.child_id, intent.mission_id, session.id);
+  }
+
+  const { error: stateError } = await admin.from("checkout_intents")
+    .update({ checkout_status: "paid" }).eq("id", intent.id);
+  if (stateError) {
+    logError("stripe_intent_state_failed", stateError, { intentId: intent.id });
+    if (!duplicate) await releaseClaim(admin, event);
+    return NextResponse.json({ error: "Purchase state failed" }, { status: 500 });
   }
 
   return duplicate
@@ -331,7 +375,8 @@ async function notifyAccessGranted(
 
     if (!parent?.email) return;
 
-    const origin = process.env.NEXT_PUBLIC_SITE_URL ?? "";
+    let origin: string;
+    try { origin = siteUrl(); } catch { return; }
 
     await sendMissionAccessEmail({
       to: parent.email,

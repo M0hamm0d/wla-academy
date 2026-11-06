@@ -34,7 +34,7 @@ function ChildFields({
       <Field
         label="Name"
         htmlFor="displayName"
-        hint="A first name or nickname is enough."
+        hint="Enter one first name or nickname only. Do not include a surname."
         error={state.fieldErrors?.displayName}
       >
         <Input
@@ -43,6 +43,8 @@ function ChildFields({
           defaultValue={child?.display_name ?? ""}
           required
           maxLength={40}
+          pattern="\s*\S+\s*"
+          title="Enter one first name or nickname only."
           invalid={Boolean(state.fieldErrors?.displayName)}
         />
       </Field>

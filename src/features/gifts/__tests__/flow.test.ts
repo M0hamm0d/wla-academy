@@ -100,6 +100,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 const admin = () => createAdminClient();
 /** The function's rules, in memory; the SQL itself runs in scripts/gift-regression.sql. */
 const confirmRpc = async (name: string, a: Record<string, string>) => {
+  if (name === "consume_gift_request_limit") return { data: true, error: null };
   if (name !== "confirm_gift_email") return { data: null, error: null };
   if (db.rpcDown) return { data: null, error: { message: "down" } };
   const g = db.gifts.find((x) => x.redeem_token_hash === a.p_token_hash);
@@ -123,7 +124,7 @@ const sentToken = () => new URL(db.send.mock.calls.at(-1)![0].redeemUrl).searchP
 const fulfil = (g: Row) => fulfilPaidGift(admin(), g as any, "pi_1");
 
 beforeEach(() => {
-  vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://academy.test");
+  vi.stubEnv("SITE_URL", "https://academy.test");
   db.gifts = [];
   db.rpc.mockReset().mockImplementation(confirmRpc);
   db.rpcDown = false;
@@ -399,6 +400,7 @@ describe("redeeming from the website with a code (D-145)", () => {
   const CODE = "ABCD2345";
   const issuing = (rows: unknown[]) =>
     db.rpc.mockImplementation(async (name: string) => {
+      if (name === "consume_gift_request_limit") return { data: true, error: null };
       if (name === "issue_gift_code") return { data: rows, error: null };
       if (name === "withdraw_gift_code") return { data: null, error: null };
       return { data: null, error: null };
@@ -406,6 +408,7 @@ describe("redeeming from the website with a code (D-145)", () => {
   const issued = [{ gift_id: "g1", mission_id: "m1", code: "ABCD-2345" }];
   const answering = (word: string) =>
     db.rpc.mockImplementation(async (name: string, a: Record<string, string>) => {
+      if (name === "consume_gift_request_limit") return { data: true, error: null };
       if (name !== "confirm_gift_code") return { data: null, error: null };
       if (word === "matched") db.gifts[0].claim_hash = a.p_claim_hash;
       return { data: word, error: null };
@@ -417,9 +420,17 @@ describe("redeeming from the website with a code (D-145)", () => {
     const no = await requestGiftCodeAction({}, form({ email: "nobody@example.test" }));
     expect(yes.notice).toBe(no.notice);
     expect(yes.notice).toMatch(/^If a gift was sent/);
-    expect(db.rpc).not.toHaveBeenCalled();
+    expect(db.rpc).toHaveBeenCalledTimes(2);
+    expect(db.rpc).toHaveBeenCalledWith("consume_gift_request_limit", expect.objectContaining({ p_send: true }));
     expect(db.after).toHaveLength(2);
     expect(db.cookies.size).toBe(0);
+  });
+
+  it("rate-limits gift email requests across server instances without changing the generic response", async () => {
+    db.rpc.mockResolvedValue({ data: false, error: null });
+    const result = await requestGiftCodeAction({}, form({ email: "r@example.test" }));
+    expect(result.notice).toMatch(/^If a gift was sent/);
+    expect(db.after).toHaveLength(0);
   });
 
   it("no gift, or too soon: the database returns nothing and no email goes", async () => {
@@ -465,7 +476,7 @@ describe("redeeming from the website with a code (D-145)", () => {
     const claim = db.cookies.get("wla_gift_claim")!;
     expect(claim).toBeTruthy();
     expect(db.gifts[0].claim_hash).toBe(hashGiftToken(claim));
-    expect(db.rpc.mock.calls[0][1]).toMatchObject({ p_email: "r@example.test", p_code: CODE });
+    expect(db.rpc.mock.calls.find(([name]) => name === "confirm_gift_code")?.[1]).toMatchObject({ p_email: "r@example.test", p_code: CODE });
   });
 
   it("a wrong code, however the database got there, is one message and no cookie", async () => {
@@ -487,11 +498,13 @@ describe("redeeming from the website with a code (D-145)", () => {
   it("a malformed code isn't even sent", async () => {
     const result = await confirmGiftCodeAction({}, form({ email: "r@example.test", code: "abc" }));
     expect(result.fieldErrors?.code).toBeTruthy();
-    expect(db.rpc).not.toHaveBeenCalled();
+    expect(db.rpc).not.toHaveBeenCalledWith("confirm_gift_code", expect.anything());
   });
 
   it("a database failure isn't reported as a wrong code", async () => {
-    db.rpc.mockResolvedValue({ data: null, error: { message: "down" } });
+    db.rpc.mockImplementation(async (name) => name === "consume_gift_request_limit"
+      ? { data: true, error: null }
+      : { data: null, error: { message: "down" } });
     const result = await confirmGiftCodeAction({}, form({ email: "r@example.test", code: CODE }));
     expect(result.error).toMatch(/couldn't check/);
   });
