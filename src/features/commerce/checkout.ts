@@ -264,7 +264,16 @@ async function createCheckoutSession({
   const prior = await admin.from("checkout_intents").select(selected)
     .eq("child_id", child.id).eq("mission_id", mission.id)
     .in("checkout_status", ["initializing", "open"]).maybeSingle();
-  if (prior.error) throw new CheckoutError("We couldn't check your payment. Please try again.", "provider");
+  if (prior.error) {
+    console.error("[CHECKOUT DEBUG] Failed to find existing checkout:", {
+    code: prior.error.code,
+    message: prior.error.message,
+    details: prior.error.details,
+    hint: prior.error.hint,
+    childId: child.id,
+    missionId: mission.id,
+  });
+    throw new CheckoutError("We couldn't check your payment. Please try again.", "provider");}
   let attempt = prior.data;
   const reserved = attempt ? null : await admin.from("checkout_intents").insert({
     parent_id: user.id,
@@ -285,7 +294,17 @@ async function createCheckoutSession({
       const existing = await admin.from("checkout_intents").select(selected)
         .eq("child_id", child.id).eq("mission_id", mission.id)
         .in("checkout_status", ["initializing", "open"]).maybeSingle();
-    if (existing.error || !existing.data) throw new CheckoutError("We couldn't check your payment. Please try again.", "provider");
+    if (existing.error || !existing.data) {
+      console.error("[CHECKOUT DEBUG] Failed to retrieve existing checkout:", {
+    code: existing.error?.code,
+    message: existing.error?.message,
+    details: existing.error?.details,
+    hint: existing.error?.hint,
+    hasData: !!existing.data,
+    childId: child.id,
+    missionId: mission.id,
+  });
+      throw new CheckoutError("We couldn't check your payment. Please try again.", "provider");}
     attempt = existing.data;
     } else if (reserved.error || !attempt) {
       logError("checkout_intent_reserve_failed", reserved.error, { missionId: mission.id });
