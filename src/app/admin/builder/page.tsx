@@ -53,6 +53,19 @@ export default async function BuilderIndexPage() {
         . Drafts are private: nothing here reaches a learner until a version is
         published.
       </p>
+
+     <section className="mt-[var(--space-2xl)] mb-[var(--space-3xl)] max-w-[34rem]">
+        <h2 className="text-[length:var(--text-h3)]">Start a new mission</h2>
+        <p className="wla-measure mt-[var(--space-xs)] text-[var(--color-text-muted)]">
+          This creates the mission, hidden from the catalogue, with an empty
+          draft (version 1) to build in. You can change everything except the
+          address later.
+        </p>
+        <div className="mt-[var(--space-l)]">
+          <NewMissionForm />
+        </div>
+      </section>
+
       <section>
         <h2 className="text-[length:var(--text-h3)]">In progress</h2>
         <div className="mt-[var(--space-m)]">
@@ -99,18 +112,6 @@ export default async function BuilderIndexPage() {
               })}
             </DataTable>
           )}
-        </div>
-      </section>
-
-      <section className="mt-[var(--space-2xl)] max-w-[34rem]">
-        <h2 className="text-[length:var(--text-h3)]">Start a new mission</h2>
-        <p className="wla-measure mt-[var(--space-xs)] text-[var(--color-text-muted)]">
-          This creates the mission, hidden from the catalogue, with an empty
-          draft (version 1) to build in. You can change everything except the
-          address later.
-        </p>
-        <div className="mt-[var(--space-l)]">
-          <NewMissionForm />
         </div>
       </section>
     </AdminPage>
