@@ -23,6 +23,7 @@ const actions = vi.hoisted(() => ({
   createVersionAction: vi.fn(async () => ({})),
 }));
 const push = vi.hoisted(() => vi.fn());
+const back = vi.hoisted(() => vi.fn());
 
 vi.mock("@/features/admin/builder-actions", () => actions);
 vi.mock("@/features/admin/kit-actions", () => ({
@@ -35,7 +36,7 @@ vi.mock("@/features/admin/asset-actions", () => ({
   saveAssetAction: vi.fn(async () => ({ ok: true })),
   deleteAssetAction: vi.fn(async () => undefined),
 }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ push, refresh: vi.fn() }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ back, push, refresh: vi.fn() }) }));
 const saveMission = vi.hoisted(() => vi.fn(async () => ({ ok: true, message: "Saved." })));
 vi.mock("@/features/admin/actions", () => ({ saveMissionAction: saveMission }));
 
@@ -501,8 +502,10 @@ describe("mission details form: catalogue wording and unsaved protection", () =>
     await waitFor(() => screen.getByText("We couldn't save."));
     expect(screen.getByText("Unsaved changes")).toBeDefined();
     expect(title.value).toBe("Demo 2");
+    expect(back).not.toHaveBeenCalled();
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save changes" })); });
     await waitFor(() => expect(screen.queryByText("Unsaved changes")).toBeNull());
+    await waitFor(() => expect(back).toHaveBeenCalledTimes(1));
   });
 });
 

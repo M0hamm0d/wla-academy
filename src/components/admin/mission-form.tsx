@@ -1,6 +1,7 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Field, FormError, FormNotice, Input } from "@/components/ui/field";
 import { Button } from "@/components/ui/button";
 import { saveMissionAction } from "@/features/admin/actions";
@@ -38,6 +39,7 @@ export function MissionForm({
   mission: MissionRow;
   versionUsage: { version: number; runs: number; complete: number }[];
 }) {
+  const router = useRouter();
   const [state, action, pending] = useActionState<AdminFormState, FormData>(
     saveMissionAction.bind(null, mission.slug),
     emptyAdminState,
@@ -47,8 +49,15 @@ export function MissionForm({
   // Saving mid-upload would save the old cover and strand the new one.
   const [coverBusy, setCoverBusy] = useState(false);
   const { ref, dirty, saved } = useDirtyForm("details", "the mission details");
+  const hasReturned = useRef(false);
   const submit = useSubmitWithoutReset(action);
-  useEffect(() => { if (state.ok) saved(); }, [state]); // eslint-disable-line react-hooks/exhaustive-deps -- once per action result
+  useEffect(() => {
+    if (state.ok && !hasReturned.current) {
+      hasReturned.current = true;
+      saved();
+      router.back();
+    }
+  }, [router, saved, state]);
   const liveRuns = versionUsage.filter((v) => v.runs > v.complete);
 
   return (
