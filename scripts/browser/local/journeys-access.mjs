@@ -101,7 +101,7 @@ try {
   const rotate = (current, previous) => JSON.parse(execFileSync("node", ["scripts/rotate-child-code-key.ts"], {
     cwd: new URL("../../../", import.meta.url).pathname, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
     env: { ...process.env, NEXT_PUBLIC_SUPABASE_URL: SUPABASE, SUPABASE_SERVICE_ROLE_KEY: ENV.SUPABASE_SERVICE_ROLE_KEY, CHILD_CODE_ENCRYPTION_KEY: current, CHILD_CODE_ENCRYPTION_KEY_PREVIOUS: previous },
-  }));
+  })).children; // the script also re-seals purchasers' gift-code copies (D-149), reported separately
   const first = rotate(NEW, OLD);
   chk("rotating re-encrypts under the new key, with nothing unreadable or failed", first.moved >= 1 && first.unreadable === 0 && first.failed === 0, JSON.stringify(first));
   const during = sql(`select code_ciphertext from child_access_credentials where child_id='${id}' and revoked_at is null`);

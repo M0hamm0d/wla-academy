@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { hashGiftToken, looksLikeGiftToken, newGiftToken, normaliseGiftEmail } from "../token";
+import * as token from "../token";
+import { hashGiftToken, looksLikeGiftToken, newGiftToken } from "../token";
 
 describe("gift tokens", () => {
   it("are long, random and URL-safe, and only their hash is kept", () => {
@@ -18,7 +19,7 @@ describe("gift tokens", () => {
     }
   });
 
-  it("compares addresses by one rule", () => {
-    expect(normaliseGiftEmail("  Someone@Example.COM ")).toBe("someone@example.com");
+  it("has nothing for comparing recipient addresses: none is collected (D-149)", () => {
+    expect(Object.keys(token).some((k) => /email/i.test(k))).toBe(false);
   });
 });

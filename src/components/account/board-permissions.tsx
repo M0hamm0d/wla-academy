@@ -1,7 +1,10 @@
 import { permitBoardAction, withdrawBoardAction } from "@/features/mission-board/actions";
-import type { BoardStatus } from "@/types/database";
+import type { BoardRejectedReason, BoardStatus } from "@/types/database";
 
-type Row = { id: string; child_name: string; mission_title: string; text: string; status: BoardStatus; created_at: string };
+type Row = {
+  id: string; child_name: string; mission_title: string; text: string; status: BoardStatus; created_at: string;
+  rejected_reason?: BoardRejectedReason | null; delete_after?: string | null;
+};
 
 const STATUS: Record<BoardStatus, string> = {
   pending_permission: "Waiting for your permission",
@@ -32,8 +35,19 @@ export function BoardPermissions({ rows, nested = false }: { rows: Row[]; nested
         {rows.map((r) => (
           <li key={r.id} className="border-b border-[var(--color-border)] py-[var(--space-l)]">
             <p className="text-[length:var(--text-label)] font-medium text-[var(--color-text-muted)]">
-              {r.child_name} · {r.mission_title} · {STATUS[r.status]}
+              {r.child_name} · {r.mission_title} ·{" "}
+              {r.status === "rejected" && r.rejected_reason === "cannot_anonymise" ? "Kept private by WLA" : STATUS[r.status]}
             </p>
+            {r.status === "rejected" && (
+              <p className="mt-[var(--space-xs)] text-[length:var(--text-small)]">
+                {r.rejected_reason === "cannot_anonymise"
+                  ? "WLA couldn't make this anonymous enough to share, so it stays private."
+                  : "WLA didn't add this to the Board."}{" "}
+                {r.delete_after
+                  ? `This copy will be deleted on ${new Date(r.delete_after).toLocaleDateString("en-GB")}. The Trail entry itself stays.`
+                  : "This copy will be deleted within 30 days. The Trail entry itself stays."}
+              </p>
+            )}
             <p className="wla-measure mt-[var(--space-xs)] whitespace-pre-line">{r.text}</p>
             <p className="mt-[var(--space-xs)] text-[length:var(--text-small)] text-[var(--color-text-muted)]">This is the copy WLA would see, with names and details removed.</p>
             <div className="mt-[var(--space-s)] flex flex-wrap gap-[var(--space-l)]">

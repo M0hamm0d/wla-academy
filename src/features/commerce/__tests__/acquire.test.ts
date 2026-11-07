@@ -70,8 +70,10 @@ vi.mock("@/lib/supabase/admin", () => ({
 }));
 
 const { acquireMission } = await import("../checkout");
-const go = (childId = "child-1") =>
-  acquireMission({ childId, missionSlug: "mars-bridge", origin: "https://academy.example" });
+const { consentWording } = await import("../consent");
+const CONSENT = { earlySupplyConsentAt: "2026-11-06T10:00:00.000Z", cancellationAckAt: "2026-11-06T10:00:00.000Z", wording: consentWording() };
+const go = (childId = "child-1", consent: typeof CONSENT | null = CONSENT) =>
+  acquireMission({ childId, missionSlug: "mars-bridge", origin: "https://academy.example", consent });
 
 beforeEach(() => {
   db.mission = { id: "m-1", slug: "mars-bridge", title: "Mars Bridge", description: null, is_free: false, price_minor: 1200, currency: "GBP" };
@@ -99,7 +101,13 @@ describe("a fresh purchase", () => {
       {
         table: "checkout_intents",
         op: "insert",
-        row: { stripe_session_id: "cs_new", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP" },
+        row: {
+          stripe_session_id: "cs_new", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP",
+          // Both checkout statements, with what they said, kept with the order (D-152).
+          early_supply_consent_at: CONSENT.earlySupplyConsentAt,
+          cancellation_ack_at: CONSENT.cancellationAckAt,
+          consent_wording: CONSENT.wording,
+        },
       },
     ]);
     // Never an entitlement from here — only the webhook grants a paid one.
@@ -114,6 +122,17 @@ describe("a fresh purchase", () => {
     // Nothing that would let Stripe choose methods from the dashboard instead.
     expect(sent).not.toHaveProperty("automatic_payment_methods");
     expect(sent).not.toHaveProperty("payment_method_configuration");
+  });
+
+  it("without both checkout statements, nothing reaches Stripe and nothing is recorded (D-152)", async () => {
+    await expect(go("child-1", null)).rejects.toMatchObject({ reason: "consent_required" });
+    expect(stripeSessions.create).not.toHaveBeenCalled();
+    expect(adminWrites).toHaveLength(0);
+  });
+
+  it("a free mission needs no consent: nothing is paid for", async () => {
+    db.mission = { ...db.mission!, is_free: true, price_minor: null };
+    await expect(go("child-1", null)).resolves.toMatchObject({ kind: "granted" });
   });
 
   it("refuses another family's child before Stripe is touched", async () => {

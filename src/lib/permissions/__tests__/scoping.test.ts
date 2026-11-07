@@ -41,6 +41,9 @@ describe("child-scoped data access", () => {
       "features/commerce/queries.ts",
       "features/commerce/checkout.ts", // calls requireOwnedChild first
       "app/api/webhooks/stripe/route.ts", // service-role, post-verification
+      // The family's saved work (D-148): requireParent / requireOwnedChild
+      // first, then the parent's own RLS-scoped client, never the service role.
+      "features/privacy/saved-work.ts",
     ];
 
     const offenders: string[] = [];

@@ -1,31 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { randomBytes } from "node:crypto";
 
 /*
- * The server side of gifting, run: a small in-memory `mission_gifts`, real
- * token handling, real actions. What the database itself refuses is executed
- * in scripts/gift-regression.sql.
+ * The server side of gifting (D-149), run: real actions, real code handling and
+ * real encryption of the purchaser's copy, over an in-memory database. What the
+ * database itself refuses (attempt limits, single use, races, cross-family) is
+ * executed against the real schema in scripts/gift-regression.sql.
  */
 type Row = Record<string, unknown>;
 const db = vi.hoisted(() => ({
   gifts: [] as Row[],
+  profiles: [] as Row[],
   rpc: vi.fn(),
-  send: vi.fn(),
-  sendCode: vi.fn(),
+  sendGift: vi.fn(),
   cookies: new Map<string, string>(),
-  deleted: [] as unknown[],
+  cookieOptions: [] as unknown[],
+  headers: new Headers(),
   redirects: [] as string[],
-  after: [] as (() => Promise<void>)[],
   parent: "parent-1",
   ownedChildren: new Set(["child-1"]),
-  writeError: null as null | { message: string },
-  rpcDown: false,
 }));
 
-vi.mock("@/lib/email/send", () => ({ sendGiftEmail: db.send, sendGiftCodeEmail: db.sendCode }));
+vi.mock("@/lib/email/send", () => ({ sendGiftPurchaseEmail: db.sendGift }));
 vi.mock("@/lib/observability/logger", () => ({ logError: vi.fn(() => "ref"), logWarn: vi.fn() }));
 vi.mock("@/features/children/active-child", () => ({ setActiveChild: vi.fn(async () => {}) }));
 vi.mock("@/features/commerce/checkout", () => ({
-  CheckoutError: class extends Error {},
+  CheckoutError: class extends Error {
+    constructor(message: string, readonly reason: string) { super(message); }
+  },
   missionLineItem: vi.fn(),
   stripe: vi.fn(),
 }));
@@ -34,12 +36,11 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("next/navigation", () => ({
   redirect: (to: string) => { db.redirects.push(to); throw new Error("NEXT_REDIRECT"); },
 }));
-vi.mock("next/server", () => ({ after: (fn: () => Promise<void>) => { db.after.push(fn); } }));
 vi.mock("next/headers", () => ({
-  headers: async () => new Headers(),
+  headers: async () => db.headers,
   cookies: async () => ({
     get: (n: string) => (db.cookies.has(n) ? { value: db.cookies.get(n) } : undefined),
-    set: (n: string, v: string, o: unknown) => { db.cookies.set(n, v); db.deleted.push({ set: o }); },
+    set: (n: string, v: string, o: unknown) => { db.cookies.set(n, v); db.cookieOptions.push(o); },
     delete: (o: { name: string }) => { db.cookies.delete(o.name); },
   }),
 }));
@@ -60,286 +61,259 @@ vi.mock("@/lib/supabase/admin", () => ({
     from: (table: string) => {
       const filters: [string, unknown][] = [];
       let patch: Row | null = null;
-      const matches = () => db.gifts.filter((g) => filters.every(([k, v]) => g[k] === v));
+      const rows = () => (table === "profiles" ? db.profiles : table === "missions" ? [{ id: "m1", title: "Six Names" }] : db.gifts);
+      const matches = () => rows().filter((g) => filters.every(([k, v]) => g[k] === v));
       const q: Record<string, unknown> = {};
       q.select = () => q;
       q.update = (p: Row) => { patch = p; return q; };
       q.eq = (k: string, v: unknown) => { filters.push([k, v]); return q; };
-      q.is = (k: string, v: unknown) => { filters.push([k, v]); return q; };
-      q.limit = () => q;
-      q.maybeSingle = async () => {
-        if (table === "missions") return { data: { title: "Six Names" }, error: null };
-        const [row] = matches();
-        return { data: row ? { ...row, missions: { title: "Six Names", slug: "six-names" } } : null, error: null };
-      };
+      q.maybeSingle = async () => ({ data: matches()[0] ?? null, error: null });
       q.then = (resolve: (v: unknown) => void) => {
-        if (db.writeError && patch) return resolve({ data: null, error: db.writeError });
-        const rows = matches();
-        if (patch) rows.forEach((r) => Object.assign(r, patch));
-        // Copies, as a real response is: what was read doesn't change afterwards.
-        resolve({ data: rows.map((r) => ({ ...r })), error: null });
+        const found = matches();
+        if (patch) found.forEach((r) => Object.assign(r, patch));
+        resolve({ data: found.map((r) => ({ ...r })), error: null });
       };
       return q;
     },
   }),
 }));
 
-import { emailCodeFor, fulfilPaidGift, emailLinksFor } from "../fulfil";
-import {
-  confirmGiftCodeAction,
-  confirmGiftEmailAction,
-  giftMissionAction,
-  redeemGiftAction,
-  requestGiftCodeAction,
-} from "../actions";
-import { readClaimedGift } from "../redeem";
+import { fulfilPaidGift } from "../fulfil";
+import { confirmGiftCodeAction, giftMissionAction, redeemGiftAction, reissueGiftCodeAction } from "../actions";
+import { listPurchasedGifts } from "../purchaser";
 import { purchaseGift } from "../checkout";
+import { formatGiftCode, giftCodeSchema } from "../schemas";
 import { hashGiftToken, newGiftToken } from "../token";
+import { openCode } from "@/features/child-auth/code-crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { CANCELLATION_ACKNOWLEDGEMENT, EARLY_SUPPLY_CONSENT } from "@/features/commerce/consent";
 
-const admin = () => createAdminClient();
-/** The function's rules, in memory; the SQL itself runs in scripts/gift-regression.sql. */
-const confirmRpc = async (name: string, a: Record<string, string>) => {
-  if (name !== "confirm_gift_email") return { data: null, error: null };
-  if (db.rpcDown) return { data: null, error: { message: "down" } };
-  const g = db.gifts.find((x) => x.redeem_token_hash === a.p_token_hash);
-  if (!g) return { data: "invalid", error: null };
-  if (g.recipient_email !== a.p_email) return { data: "mismatch", error: null };
-  if (g.status === "redeemed") return { data: "already_redeemed", error: null };
-  g.claim_hash = a.p_claim_hash;
-  return { data: "matched", error: null };
-};
+const KEY = randomBytes(32).toString("base64");
+const CODE = "ABCD-EFGH-JKMN";
 const form = (o: Record<string, string>) => {
   const f = new FormData();
   Object.entries(o).forEach(([k, v]) => f.set(k, v));
   return f;
 };
+/** What the database does for these functions; the SQL itself runs in gift-regression.sql. */
+function database({ activation = "activated", confirm = "matched" } = {}) {
+  db.rpc.mockImplementation(async (name: string, a: Record<string, string>) => {
+    switch (name) {
+      case "activate_paid_gift": {
+        const g = db.gifts.find((x) => x.stripe_session_id === a.p_session_id);
+        if (!g) return { data: [{ outcome: "not_found", gift_id: null, code: null }], error: null };
+        if (activation !== "activated" || g.status !== "pending") return { data: [{ outcome: "already", gift_id: g.id, code: null }], error: null };
+        Object.assign(g, { status: "paid", paid_at: "2026-11-06T10:00:00Z", stripe_payment_intent_id: a.p_payment_intent, code_lookup: `hmac(${a.p_session_id})` });
+        return { data: [{ outcome: "activated", gift_id: g.id, code: CODE }], error: null };
+      }
+      case "store_gift_code_copy": {
+        const g = db.gifts.find((x) => x.id === a.p_gift_id && x.status === "paid");
+        if (!g) return { data: false, error: null };
+        g.code_ciphertext = a.p_ciphertext;
+        return { data: true, error: null };
+      }
+      case "confirm_gift_code":
+        if (confirm === "matched" && db.gifts[0]) db.gifts[0].claim_hash = a.p_claim_hash;
+        return { data: confirm, error: null };
+      case "reissue_gift_code": {
+        const g = db.gifts.find((x) => x.id === a.p_gift_id && x.purchaser_id === a.p_purchaser_id && x.status === "paid");
+        if (!g) return { data: null, error: null };
+        g.code_ciphertext = null;
+        return { data: "PQRS-TVWX-YZ23", error: null };
+      }
+      case "purchaser_gifts":
+        return { data: db.gifts.filter((g) => g.purchaser_id === a.p_purchaser_id).map((g) => ({ ...g, mission_title: "Six Names", mission_slug: "six-names" })), error: null };
+      default:
+        return { data: null, error: null };
+    }
+  });
+}
 const pending = (): Row => ({
-  id: "g1", mission_id: "m1", recipient_email: "r@example.test", amount_minor: 1200, currency: "GBP",
-  status: "pending", link_sent_at: null, redeem_token_hash: null,
+  id: "g1", mission_id: "m1", purchaser_id: "parent-1", stripe_session_id: "cs_1",
+  amount_minor: 1200, currency: "GBP", status: "pending", code_ciphertext: null,
+  consent_wording: `2026-11-06 | ${EARLY_SUPPLY_CONSENT} | ${CANCELLATION_ACKNOWLEDGEMENT}`,
+  early_supply_consent_at: "2026-11-06T09:59:00Z", created_at: "2026-11-06T09:59:00Z",
 });
-const sentToken = () => new URL(db.send.mock.calls.at(-1)![0].redeemUrl).searchParams.get("token")!;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const fulfil = (g: Row) => fulfilPaidGift(admin(), g as any, "pi_1");
 
 beforeEach(() => {
-  vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://academy.test");
-  db.gifts = [];
-  db.rpc.mockReset().mockImplementation(confirmRpc);
-  db.rpcDown = false;
-  db.send.mockReset().mockResolvedValue({ sent: true });
-  db.sendCode.mockReset().mockResolvedValue({ sent: true });
+  vi.stubEnv("CHILD_CODE_ENCRYPTION_KEY", KEY);
+  db.gifts = [pending()];
+  db.profiles = [{ id: "parent-1", email: "buyer@example.test" }];
+  db.rpc.mockReset();
+  database();
+  db.sendGift.mockReset().mockResolvedValue({ sent: true });
   db.cookies.clear();
-  db.deleted = [];
+  db.cookieOptions = [];
+  db.headers = new Headers({ "x-forwarded-for": "203.0.113.7, 10.0.0.1" });
   db.redirects = [];
-  db.after = [];
   db.parent = "parent-1";
   db.ownedChildren = new Set(["child-1"]);
-  db.writeError = null;
   vi.mocked(purchaseGift).mockReset();
 });
 
 describe("activation by the verified webhook", () => {
-  it("makes a pending gift paid, emails the only copy of the token, and stores just its hash", async () => {
-    const g = pending();
-    db.gifts = [g];
-    await fulfil({ ...g });
+  it("makes the gift redeemable, keeps only an encrypted copy, and emails the code to the PURCHASER", async () => {
+    expect(await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1")).toBe("activated");
+    const g = db.gifts[0];
     expect(g.status).toBe("paid");
     expect(g.stripe_payment_intent_id).toBe("pi_1");
-    expect(db.send).toHaveBeenCalledTimes(1);
-    const token = sentToken();
-    expect(g.redeem_token_hash).toBe(hashGiftToken(token));
-    expect(JSON.stringify(g)).not.toContain(token);
-    expect(g.link_sent_at).toBeTruthy();
-    expect(db.send.mock.calls[0][0].to).toBe("r@example.test");
+    // The copy opens to the code with the server's key, bound to this gift only.
+    expect(openCode(String(g.code_ciphertext), { giftId: "g1" }, { current: KEY })).toBe(CODE);
+    expect(() => openCode(String(g.code_ciphertext), { giftId: "g2" }, { current: KEY })).toThrow();
+    expect(String(g.code_ciphertext)).not.toContain("ABCD");
+    expect(db.sendGift).toHaveBeenCalledOnce();
+    const mail = db.sendGift.mock.calls[0][0];
+    expect(mail.to).toBe("buyer@example.test");
+    expect(mail.code).toBe(CODE);
+    expect(mail.consentRecorded).toBe(true);
+    expect(mail.consentWording).toContain(EARLY_SUPPLY_CONSENT);
+    expect(g.confirmation_sent_at).toBeTruthy();
   });
 
-  it("a repeated delivery activates nothing and sends nothing", async () => {
-    const g = pending();
-    db.gifts = [g];
-    await fulfil({ ...g });
-    const hash = g.redeem_token_hash;
-    await fulfil({ ...g });
-    expect(db.send).toHaveBeenCalledTimes(1);
-    expect(g.redeem_token_hash).toBe(hash);
+  it("asks for no recipient: nothing about the gift names one", async () => {
+    await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1");
+    expect(Object.keys(db.gifts[0]).some((k) => /recipient/.test(k))).toBe(false);
+    expect(Object.keys(db.sendGift.mock.calls[0][0]).some((k) => /recipient/.test(k))).toBe(false);
   });
 
-  it("a concurrent delivery that loses the race sends nothing", async () => {
-    const g = { ...pending(), status: "paid", link_sent_at: "now", redeem_token_hash: "h" };
-    db.gifts = [g];
-    await fulfil({ ...pending() }); // read it as pending, but the row has moved on
-    expect(db.send).not.toHaveBeenCalled();
-    expect(g.redeem_token_hash).toBe("h");
+  it("a repeated or concurrent delivery activates nothing, makes no copy and sends nothing", async () => {
+    database({ activation: "already" });
+    expect(await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1")).toBe("already");
+    expect(db.sendGift).not.toHaveBeenCalled();
+    expect(db.rpc).not.toHaveBeenCalledWith("store_gift_code_copy", expect.anything());
   });
 
-  it("a gift already redeemed is left alone", async () => {
-    const g = { ...pending(), status: "redeemed", redeem_token_hash: "h" };
-    db.gifts = [g];
-    await fulfil({ ...g });
-    expect(db.send).not.toHaveBeenCalled();
+  it("no encryption key: no copy is kept, but the purchaser is still emailed the code", async () => {
+    vi.stubEnv("CHILD_CODE_ENCRYPTION_KEY", "");
+    expect(await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1")).toBe("activated");
+    expect(db.gifts[0].code_ciphertext).toBeNull();
+    expect(db.sendGift).toHaveBeenCalledOnce();
   });
 
-  it("an email that might work next time throws, so Stripe's retry sends it with a fresh token", async () => {
-    const g = pending();
-    db.gifts = [g];
-    for (const reason of ["http_500", "http_429", "exception"]) {
-      db.send.mockResolvedValueOnce({ sent: false, reason });
-      g.status = "pending"; g.redeem_token_hash = null;
-      await expect(fulfil({ ...g })).rejects.toThrow("gift_email_retry");
-      expect(g.status).toBe("paid"); // the payment stands whatever the email did
-      expect(g.link_sent_at).toBeNull();
-    }
-    const first = g.redeem_token_hash;
-    await fulfil({ ...g });
-    expect(g.redeem_token_hash).not.toBe(first);
-    expect(g.link_sent_at).toBeTruthy();
-  });
-
-  it("an email that can't work on a retry doesn't fail the webhook", async () => {
-    const g = pending();
-    db.gifts = [g];
-    db.send.mockResolvedValueOnce({ sent: false, reason: "not_configured" });
-    await fulfil({ ...g });
-    expect(g.status).toBe("paid");
-    expect(g.link_sent_at).toBeNull();
+  it("an email that doesn't leave doesn't fail the webhook, and no confirmation is recorded", async () => {
+    db.sendGift.mockResolvedValue({ sent: false, reason: "http_503" });
+    expect(await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1")).toBe("activated");
+    expect(db.gifts[0].confirmation_sent_at).toBeUndefined();
+    expect(db.gifts[0].status).toBe("paid");
   });
 
   it("a database failure throws, so the webhook answers 500 and Stripe retries", async () => {
-    const g = pending();
-    db.gifts = [g];
-    db.writeError = { message: "down" };
-    await expect(fulfil({ ...g })).rejects.toBeTruthy();
-    expect(db.send).not.toHaveBeenCalled();
+    db.rpc.mockResolvedValue({ data: null, error: { message: "down" } });
+    await expect(fulfilPaidGift(createAdminClient(), "cs_1", "pi_1")).rejects.toBeTruthy();
+    expect(db.sendGift).not.toHaveBeenCalled();
   });
 });
 
-describe("confirming an address", () => {
-  const paid = () => {
-    const { token, hash } = newGiftToken();
-    db.gifts = [{ ...pending(), status: "paid", redeem_token_hash: hash, link_sent_at: "2020-01-01" }];
-    return token;
-  };
+describe("the purchaser's gifts", () => {
+  it("show the code, opened on the server, and never the stored copy", async () => {
+    await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1");
+    const [g] = await listPurchasedGifts();
+    expect(g.code).toBe(CODE);
+    expect(JSON.stringify(g)).not.toContain(String(db.gifts[0].code_ciphertext));
+    expect(db.rpc).toHaveBeenCalledWith("purchaser_gifts", { p_purchaser_id: "parent-1" });
+  });
 
-  it("the right address, however typed, gets the claim and the token leaves the URL", async () => {
-    const token = paid();
-    await expect(
-      confirmGiftEmailAction({}, form({ token, email: " R@Example.TEST " })),
-    ).rejects.toThrow("NEXT_REDIRECT");
+  it("a copy that can't be opened says so, and offers a new code instead of failing", async () => {
+    await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1");
+    vi.stubEnv("CHILD_CODE_ENCRYPTION_KEY", randomBytes(32).toString("base64"));
+    const [g] = await listPurchasedGifts();
+    expect(g.code).toBeNull();
+    expect(g.codeUnavailable).toBe("unreadable");
+  });
+
+  it("a pending or redeemed gift shows no code", async () => {
+    const [g] = await listPurchasedGifts();
+    expect(g.status).toBe("pending");
+    expect(g.code).toBeNull();
+  });
+
+  it("only the purchaser's own: the id comes from the session, never the form", async () => {
+    db.parent = "someone-else";
+    expect(await listPurchasedGifts()).toEqual([]);
+  });
+});
+
+describe("replacing a code", () => {
+  beforeEach(async () => { await fulfilPaidGift(createAdminClient(), "cs_1", "pi_1"); });
+
+  it("needs the confirmation box", async () => {
+    const r = await reissueGiftCodeAction({}, form({ giftId: "g1" }));
+    expect(r.error).toMatch(/Tick the box/);
+    expect(db.rpc).not.toHaveBeenCalledWith("reissue_gift_code", expect.anything());
+  });
+
+  it("re-asserts the purchaser, shows the new code and keeps a new copy", async () => {
+    const r = await reissueGiftCodeAction({}, form({ giftId: "g1", confirm: "yes", purchaserId: "attacker" }));
+    expect(db.rpc).toHaveBeenCalledWith("reissue_gift_code", { p_gift_id: "g1", p_purchaser_id: "parent-1" });
+    expect(r.code).toBe("PQRS-TVWX-YZ23");
+    expect(openCode(String(db.gifts[0].code_ciphertext), { giftId: "g1" }, { current: KEY })).toBe("PQRS-TVWX-YZ23");
+  });
+
+  it("another family's gift gets nothing", async () => {
+    db.parent = "someone-else";
+    const r = await reissueGiftCodeAction({}, form({ giftId: "g1", confirm: "yes" }));
+    expect(r.code).toBeUndefined();
+    expect(r.error).toMatch(/can't have a new code/);
+  });
+});
+
+describe("entering a code (no email address anywhere)", () => {
+  it("accepts the code however it was typed, and asks for nothing else", async () => {
+    await expect(confirmGiftCodeAction({}, form({ code: " abcd efgh-jkmn. " }))).rejects.toThrow("NEXT_REDIRECT");
+    const [, args] = db.rpc.mock.calls.find(([n]) => n === "confirm_gift_code")!;
+    expect(args.p_code).toBe("ABCDEFGHJKMN");
+    expect(Object.keys(args)).toEqual(["p_code", "p_client", "p_claim_hash"]);
+  });
+
+  it("a correct code gives an httpOnly claim cookie and only the claim's hash reaches the database", async () => {
+    await expect(confirmGiftCodeAction({}, form({ code: CODE }))).rejects.toThrow("NEXT_REDIRECT");
     const claim = db.cookies.get("wla_gift_claim")!;
-    expect(claim).not.toBe(token); // a link alone can't produce a claim (D-142)
     expect(db.gifts[0].claim_hash).toBe(hashGiftToken(claim));
-    expect(db.rpc.mock.calls[0][1]).toMatchObject({ p_email: "r@example.test" });
+    expect(db.cookieOptions[0]).toMatchObject({ httpOnly: true, sameSite: "lax", path: "/" });
     expect(db.redirects).toEqual(["/redeem"]);
-    expect(db.deleted[0]).toMatchObject({ set: { httpOnly: true, path: "/", sameSite: "lax" } });
   });
 
-  it("a wrong address gets no claim and learns nothing about the gift", async () => {
-    const token = paid();
-    const r = await confirmGiftEmailAction({}, form({ token, email: "other@example.test" }));
-    expect(r.error).toMatch(/isn't the email address/);
-    expect(r.error).not.toMatch(/Six Names/);
+  it("the attempt limit is per client: the first forwarded address is passed for hashing", async () => {
+    await expect(confirmGiftCodeAction({}, form({ code: CODE }))).rejects.toThrow();
+    const [, args] = db.rpc.mock.calls.find(([n]) => n === "confirm_gift_code")!;
+    expect(args.p_client).toBe("203.0.113.7");
+  });
+
+  it("a wrong, used or unpaid code is one message, no cookie, and at least the time floor", async () => {
+    database({ confirm: "invalid" });
+    const started = Date.now();
+    const r = await confirmGiftCodeAction({}, form({ code: CODE }));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(390);
+    expect(r.error).toMatch(/isn't right, or it has already been used/);
     expect(db.cookies.size).toBe(0);
   });
 
-  it("a wrong address can't even learn that the gift was redeemed", async () => {
-    const token = paid();
-    db.gifts[0].status = "redeemed";
-    const r = await confirmGiftEmailAction({}, form({ token, email: "other@example.test" }));
-    expect(r.error).toMatch(/isn't the email address/);
-    const right = await confirmGiftEmailAction({}, form({ token, email: "r@example.test" }));
-    expect(right.error).toMatch(/already been redeemed/);
-  });
-
-  it("an invalid or made-up token gets no claim", async () => {
-    paid();
-    for (const token of ["invalid", newGiftToken().token]) {
-      const r = await confirmGiftEmailAction({}, form({ token, email: "r@example.test" }));
-      expect(r.error).toMatch(/isn't valid/);
-    }
+  it("too many tries is said plainly", async () => {
+    database({ confirm: "rate_limited" });
+    const r = await confirmGiftCodeAction({}, form({ code: CODE }));
+    expect(r.error).toMatch(/wait 15 minutes/);
     expect(db.cookies.size).toBe(0);
   });
 
-  it("a database failure isn't reported as a wrong address", async () => {
-    const token = paid();
-    db.rpcDown = true;
-    const r = await confirmGiftEmailAction({}, form({ token, email: "r@example.test" }));
-    expect(r.error).toMatch(/try again/);
-    expect(db.cookies.size).toBe(0);
+  it("something that isn't a code is refused before the database", async () => {
+    const r = await confirmGiftCodeAction({}, form({ code: "ABCD-1234" }));
+    expect(r.fieldErrors?.code).toMatch(/twelve-character/);
+    expect(db.rpc).not.toHaveBeenCalled();
   });
 
-  it("a missing or malformed address is refused before anything is looked up", async () => {
-    for (const email of ["", "not-an-email"]) {
-      const r = await confirmGiftEmailAction({}, form({ token: "x", email }));
-      expect(r.fieldErrors?.email).toBeTruthy();
-    }
-  });
-
-  it("from the website, the answer is the same whether or not a gift exists", async () => {
-    paid();
-    const yes = await confirmGiftEmailAction({}, form({ email: "r@example.test" }));
-    const no = await confirmGiftEmailAction({}, form({ email: "nobody@example.test" }));
-    expect(yes).toEqual(no);
-    expect(yes.notice).toBeTruthy();
-    expect(db.cookies.size).toBe(0);
-    // The work happens after the response, and only the right address gets mail.
-    await Promise.all(db.after.map((fn) => fn()));
-    expect(db.send).toHaveBeenCalledTimes(1);
-    expect(db.send.mock.calls[0][0].to).toBe("r@example.test");
-  });
-});
-
-describe("asking for the link again", () => {
-  it("is throttled per gift", async () => {
-    const { hash } = newGiftToken();
-    const g = { ...pending(), status: "paid", redeem_token_hash: hash, link_sent_at: new Date().toISOString() };
-    db.gifts = [g];
-    await emailLinksFor(admin(), "r@example.test");
-    expect(db.send).not.toHaveBeenCalled();
-    expect(g.redeem_token_hash).toBe(hash);
-  });
-
-  it("simultaneous requests can't all pass the throttle", async () => {
-    const g = { ...pending(), status: "paid", redeem_token_hash: "h", link_sent_at: null };
-    db.gifts = [g];
-    await Promise.all([1, 2, 3].map(() => emailLinksFor(admin(), "r@example.test")));
-    expect(db.send).toHaveBeenCalledTimes(1);
-  });
-
-  it("a failed send gives the throttle back", async () => {
-    const earlier = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    const g = { ...pending(), status: "paid", redeem_token_hash: "h", link_sent_at: earlier };
-    db.gifts = [g];
-    db.send.mockResolvedValueOnce({ sent: false, reason: "http_500" });
-    await emailLinksFor(admin(), "r@example.test");
-    expect(g.link_sent_at).toBe(earlier);
-    expect(g.redeem_token_hash).toBe("h");
-  });
-
-  it("a new link resets the count of wrong addresses", async () => {
-    const g = { ...pending(), status: "paid", redeem_token_hash: "h", link_sent_at: null, confirm_failures: 10 };
-    db.gifts = [g];
-    await emailLinksFor(admin(), "r@example.test");
-    expect(g.confirm_failures).toBe(0);
-  });
-
-  it("replaces the token only once the email has gone", async () => {
-    const { hash } = newGiftToken();
-    const g = { ...pending(), status: "paid", redeem_token_hash: hash, link_sent_at: null };
-    db.gifts = [g];
-    db.send.mockResolvedValueOnce({ sent: false, reason: "not_configured" });
-    await emailLinksFor(admin(), "r@example.test");
-    expect(g.redeem_token_hash).toBe(hash); // the old link still works
-    await emailLinksFor(admin(), "r@example.test");
-    expect(g.redeem_token_hash).toBe(hashGiftToken(sentToken()));
+  it("a database failure isn't reported as a wrong code", async () => {
+    db.rpc.mockResolvedValue({ data: null, error: { message: "down" } });
+    const r = await confirmGiftCodeAction({}, form({ code: CODE }));
+    expect(r.error).toMatch(/couldn't check/);
   });
 });
 
 describe("redeeming", () => {
   const claim = () => { const t = newGiftToken().token; db.cookies.set("wla_gift_claim", t); return t; };
 
-  it("needs a confirmed claim", async () => {
+  it("needs a claim from a correct code", async () => {
     const r = await redeemGiftAction({}, form({ childId: "child-1" }));
-    expect(r.error).toMatch(/confirm your email/);
+    expect(r.error).toMatch(/enter the gift code again/);
     expect(db.rpc).not.toHaveBeenCalled();
   });
 
@@ -364,7 +338,7 @@ describe("redeeming", () => {
   it.each([
     ["already_owned", /already has this mission/, true],
     ["already_redeemed", /already been redeemed/, false],
-    ["invalid", /confirm your email/, false],
+    ["invalid", /enter the gift code again/, false],
     ["unavailable", /can't be added for that child/, true],
     ["forbidden", /Choose who/, true],
   ])("%s is explained and goes nowhere", async (outcome, message, keepsClaim) => {
@@ -377,163 +351,30 @@ describe("redeeming", () => {
   });
 });
 
-describe("the gift toggle's action", () => {
-  it("refuses a missing or invalid recipient before Stripe is involved", async () => {
-    for (const recipientEmail of ["", "nope", "a@"]) {
-      const r = await giftMissionAction("six-names", {}, form({ recipientEmail }));
-      expect(r.fieldErrors?.recipientEmail).toBeTruthy();
-    }
-    expect(purchaseGift).not.toHaveBeenCalled();
-  });
-
-  it("a valid recipient goes on to Stripe", async () => {
-    vi.mocked(purchaseGift).mockResolvedValue({ kind: "checkout", url: "https://stripe.test/c" });
+describe("buying a gift", () => {
+  it("asks for no recipient address, and passes both statements only when both are ticked", async () => {
+    vi.mocked(purchaseGift).mockResolvedValue({ kind: "checkout", url: "https://checkout.stripe.test/x" });
     await expect(
-      giftMissionAction("six-names", {}, form({ recipientEmail: "r@example.test" })),
+      giftMissionAction("six-names", {}, form({ earlySupplyConsent: "yes", cancellationAcknowledged: "yes", recipientEmail: "ignored@example.test" })),
     ).rejects.toThrow("NEXT_REDIRECT");
-    expect(db.redirects).toEqual(["https://stripe.test/c"]);
+    const args = vi.mocked(purchaseGift).mock.calls[0][0];
+    expect(Object.keys(args).sort()).toEqual(["consent", "missionSlug", "origin"]);
+    expect(args.consent?.wording).toContain(CANCELLATION_ACKNOWLEDGEMENT);
+    expect(db.redirects).toEqual(["https://checkout.stripe.test/x"]);
+  });
+
+  it("one box ticked is no consent at all", async () => {
+    vi.mocked(purchaseGift).mockResolvedValue({ kind: "checkout", url: "x" });
+    await giftMissionAction("six-names", {}, form({ earlySupplyConsent: "yes" })).catch(() => {});
+    expect(vi.mocked(purchaseGift).mock.calls[0][0].consent).toBeNull();
   });
 });
 
-describe("redeeming from the website with a code (D-145)", () => {
-  const CODE = "ABCD2345";
-  const issuing = (rows: unknown[]) =>
-    db.rpc.mockImplementation(async (name: string) => {
-      if (name === "issue_gift_code") return { data: rows, error: null };
-      if (name === "withdraw_gift_code") return { data: null, error: null };
-      return { data: null, error: null };
-    });
-  const issued = [{ gift_id: "g1", mission_id: "m1", code: "ABCD-2345" }];
-  const answering = (word: string) =>
-    db.rpc.mockImplementation(async (name: string, a: Record<string, string>) => {
-      if (name !== "confirm_gift_code") return { data: null, error: null };
-      if (word === "matched") db.gifts[0].claim_hash = a.p_claim_hash;
-      return { data: word, error: null };
-    });
-
-  it("asking gives the same answer whether or not a gift exists, and sends only after responding", async () => {
-    issuing(issued);
-    const yes = await requestGiftCodeAction({}, form({ email: "  R@Example.test " }));
-    const no = await requestGiftCodeAction({}, form({ email: "nobody@example.test" }));
-    expect(yes.notice).toBe(no.notice);
-    expect(yes.notice).toMatch(/^If a gift was sent/);
-    expect(db.rpc).not.toHaveBeenCalled();
-    expect(db.after).toHaveLength(2);
-    expect(db.cookies.size).toBe(0);
-  });
-
-  it("no gift, or too soon: the database returns nothing and no email goes", async () => {
-    issuing([]);
-    await emailCodeFor(admin(), "nobody@example.test");
-    expect(db.sendCode).not.toHaveBeenCalled();
-  });
-
-  it("a gift: the code goes only to that address, naming the mission", async () => {
-    issuing(issued);
-    await emailCodeFor(admin(), "r@example.test");
-    expect(db.sendCode).toHaveBeenCalledExactlyOnceWith({
-      to: "r@example.test",
-      missionTitle: "Six Names",
-      code: "ABCD-2345",
-    });
-  });
-
-  it("a failed send withdraws the code, so asking again can work", async () => {
-    issuing(issued);
-    db.sendCode.mockResolvedValue({ sent: false, reason: "http_500" });
-    await emailCodeFor(admin(), "r@example.test");
-    expect(db.rpc).toHaveBeenCalledWith("withdraw_gift_code", { p_gift_id: "g1", p_code: "ABCD-2345" });
-  });
-
-  it("a successful send keeps it", async () => {
-    issuing(issued);
-    await emailCodeFor(admin(), "r@example.test");
-    expect(db.rpc).not.toHaveBeenCalledWith("withdraw_gift_code", expect.anything());
-  });
-
-  it("a database failure while asking doesn't throw", async () => {
-    db.rpc.mockResolvedValue({ data: null, error: { message: "down" } });
-    await expect(emailCodeFor(admin(), "r@example.test")).resolves.toBeUndefined();
-    expect(db.sendCode).not.toHaveBeenCalled();
-  });
-
-  it("the right code gets the claim cookie, as the link does, and sends only the claim's hash", async () => {
-    db.gifts = [{ id: "g1", status: "paid" }];
-    answering("matched");
-    await expect(confirmGiftCodeAction({}, form({ email: "r@example.test", code: "abcd-2345" }))).rejects.toThrow("NEXT_REDIRECT");
-    expect(db.redirects).toEqual(["/redeem"]);
-    const claim = db.cookies.get("wla_gift_claim")!;
-    expect(claim).toBeTruthy();
-    expect(db.gifts[0].claim_hash).toBe(hashGiftToken(claim));
-    expect(db.rpc.mock.calls[0][1]).toMatchObject({ p_email: "r@example.test", p_code: CODE });
-  });
-
-  it("a wrong code, however the database got there, is one message and no cookie", async () => {
-    answering("invalid");
-    const wrong = await confirmGiftCodeAction({}, form({ email: "r@example.test", code: CODE }));
-    const noGift = await confirmGiftCodeAction({}, form({ email: "nobody@example.test", code: CODE }));
-    expect(wrong.error).toBe(noGift.error);
-    expect(wrong.error).toMatch(/isn't right, or it has expired/);
-    expect(db.cookies.size).toBe(0);
-  });
-
-  it("a wrong code and no gift take the same time, at least the floor", async () => {
-    answering("invalid");
-    const started = Date.now();
-    await confirmGiftCodeAction({}, form({ email: "nobody@example.test", code: CODE }));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(390);
-  });
-
-  it("a malformed code isn't even sent", async () => {
-    const result = await confirmGiftCodeAction({}, form({ email: "r@example.test", code: "abc" }));
-    expect(result.fieldErrors?.code).toBeTruthy();
-    expect(db.rpc).not.toHaveBeenCalled();
-  });
-
-  it("a database failure isn't reported as a wrong code", async () => {
-    db.rpc.mockResolvedValue({ data: null, error: { message: "down" } });
-    const result = await confirmGiftCodeAction({}, form({ email: "r@example.test", code: CODE }));
-    expect(result.error).toMatch(/couldn't check/);
-  });
-
-  it("the address never goes in a URL, and the code never reaches a log or the page", async () => {
-    answering("invalid");
-    const logger = await import("@/lib/observability/logger");
-    const result = await confirmGiftCodeAction({}, form({ email: "r@example.test", code: CODE }));
-    expect(JSON.stringify(result)).not.toContain(CODE);
-    expect(db.redirects).toEqual([]);
-    expect(JSON.stringify(vi.mocked(logger.logWarn).mock.calls)).not.toContain(CODE);
-    expect(JSON.stringify(vi.mocked(logger.logError).mock.calls)).not.toContain(CODE);
-  });
-
-  it("the link still works alongside codes", async () => {
-    const { token, hash } = newGiftToken();
-    db.gifts = [{ id: "g1", status: "paid", recipient_email: "r@example.test", redeem_token_hash: hash }];
-    await expect(confirmGiftEmailAction({}, form({ email: "r@example.test", token }))).rejects.toThrow("NEXT_REDIRECT");
-    expect(db.cookies.get("wla_gift_claim")).toBeTruthy();
-  });
-
-  it("asking for a link instead keeps its own ten-minute limit", async () => {
-    db.gifts = [{ id: "g1", mission_id: "m1", recipient_email: "r@example.test", status: "paid", link_sent_at: new Date().toISOString() }];
-    await confirmGiftEmailAction({}, form({ email: "r@example.test" }));
-    await Promise.all(db.after.map((fn) => fn()));
-    expect(db.send).not.toHaveBeenCalled();
-  });
-});
-
-describe("a claim expires in the database as well as in its cookie", () => {
-  const claimed = (expires: Date | null) => {
-    const { token, hash } = newGiftToken();
-    db.gifts = [{ id: "g1", status: "paid", mission_id: "m1", claim_hash: hash, claim_expires_at: expires?.toISOString() ?? null }];
-    return token;
-  };
-
-  it("an unexpired claim reads", async () => {
-    const token = claimed(new Date(Date.now() + 60_000));
-    await expect(readClaimedGift(token)).resolves.toMatchObject({ missionTitle: "Six Names" });
-  });
-
-  it("an expired claim shows nothing, even with the cookie still held", async () => {
-    await expect(readClaimedGift(claimed(new Date(Date.now() - 1000)))).resolves.toBeNull();
+describe("the code's shape", () => {
+  it("normalises spaces, hyphens, case and punctuation, and refuses anything else", () => {
+    expect(giftCodeSchema.parse("abcd efgh-jkmn.")).toBe("ABCDEFGHJKMN");
+    expect(giftCodeSchema.safeParse("ABCD-EFGH-JKM0").success).toBe(false); // 0 isn't in the alphabet
+    expect(giftCodeSchema.safeParse("ABCD-EFGH").success).toBe(false);
+    expect(formatGiftCode("abcdefghjkmn")).toBe("ABCD-EFGH-JKMN");
   });
 });

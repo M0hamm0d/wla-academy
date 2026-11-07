@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { EmptyState, ErrorState } from "@/components/system/states";
 import { ButtonLink } from "@/components/ui/button";
+import { FormError, FormNotice } from "@/components/ui/field";
 import { RemoveChild } from "@/components/profile/remove-child";
 import { listChildren } from "@/features/children/queries";
 
@@ -13,7 +14,20 @@ export const metadata = { title: "Child profiles" };
  * missions, progress and Mission Trail. The copy says so, because the
  * separation is the product model, not an implementation detail.
  */
-export default async function ChildrenPage() {
+const REMOVAL: Record<string, { notice?: string; error?: string }> = {
+  removed: { notice: "The profile has been removed, with its progress, Mission Trail and files. Other profiles are unchanged." },
+  pending: { notice: "The profile has been removed from your account and can no longer be used. Deleting its stored files is taking longer; it will finish automatically." },
+  held: { notice: "The profile can no longer be used. WLA has to keep its records for now for a legal reason, and will delete them when that ends." },
+  failed: { error: "We couldn't remove that profile. Nothing has been deleted. Please try again." },
+};
+
+export default async function ChildrenPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ removal?: string }>;
+}) {
+  const { removal } = await searchParams;
+  const removalMessage = removal ? REMOVAL[removal] : undefined;
   let children;
   try {
     children = await listChildren();
@@ -36,6 +50,13 @@ export default async function ChildrenPage() {
         </div>
         <ButtonLink href="/account/children/new">Add a profile</ButtonLink>
       </div>
+
+      {removalMessage && (
+        <div className="mt-[var(--space-l)]">
+          <FormNotice message={removalMessage.notice} />
+          <FormError message={removalMessage.error} />
+        </div>
+      )}
 
       {children.length === 0 ? (
         <EmptyState

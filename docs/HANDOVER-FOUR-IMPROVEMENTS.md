@@ -6,6 +6,8 @@ the rest builds on) and the four improvements.
 
 **Nothing here has been deployed, and no hosted database has been changed.**
 
+> **Updated 2026-11-06:** gift delivery by recipient email (D-145, and the `/redeem` email limit below) is superseded by D-149. The purchaser receives the code and shares it; there is no recipient address and no gift email. Four further migrations (`20261106120000` to `20261106150000`) follow the six below. See `docs/PRIVACY-OPERATIONS.md`.
+
 | Improvement | Decision | Where to start |
 |---|---|---|
 | Gift redemption by emailed code | D-145 | `src/features/gifts/`, `src/components/commerce/redeem-forms.tsx` |

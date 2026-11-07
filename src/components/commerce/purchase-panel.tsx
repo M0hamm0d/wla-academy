@@ -2,9 +2,10 @@
 
 import { useActionState, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Field, FormError, Input } from "@/components/ui/field";
+import { FormError } from "@/components/ui/field";
 import { emptyFormState } from "@/features/auth/schemas";
 import { giftMissionAction } from "@/features/gifts/actions";
+import { ConsentFields } from "./consent-fields";
 import { PurchaseForm } from "./purchase-form";
 
 type PanelProps = React.ComponentProps<typeof PurchaseForm> & { startAsGift: boolean };
@@ -62,35 +63,22 @@ export function PurchasePanel({ startAsGift, ...purchase }: PanelProps) {
 function GiftForm({ missionSlug, priceLabel }: { missionSlug: string; priceLabel: string }) {
   const action = giftMissionAction.bind(null, missionSlug);
   const [state, formAction, isPending] = useActionState(action, emptyFormState);
-  // Controlled: React clears an uncontrolled field after every form action.
-  const [recipient, setRecipient] = useState("");
 
   return (
-    <form action={formAction} noValidate className="flex flex-col gap-[var(--space-l)]">
+    <form action={formAction} className="flex flex-col gap-[var(--space-l)]">
       <FormError message={state.error} />
-      <Field
-        label="Recipient email"
-        htmlFor="recipientEmail"
-        error={state.fieldErrors?.recipientEmail}
-        hint="We'll email them a link to redeem the mission once your payment is confirmed."
-      >
-        <Input
-          id="recipientEmail"
-          name="recipientEmail"
-          type="email"
-          autoComplete="off"
-          required
-          value={recipient}
-          onChange={(e) => setRecipient(e.target.value)}
-          invalid={Boolean(state.fieldErrors?.recipientEmail)}
-        />
-      </Field>
+      <p className="text-[var(--color-text-muted)]">
+        Once your payment is confirmed you&rsquo;ll get a gift code, on screen and by email. Share it
+        with the person you&rsquo;re giving it to, however you like: they enter it on Redeem a Gift and
+        choose their child. We don&rsquo;t need their email address.
+      </p>
+      <ConsentFields error={state.fieldErrors?.consent} />
       <Button type="submit" size="large" isLoading={isPending} loadingLabel="Taking you to payment…">
         {`Continue to payment — ${priceLabel}`}
       </Button>
       <p className="text-[length:var(--text-small)] text-[var(--color-text-muted)]">
         Payment is handled by Stripe. A gift isn&rsquo;t added to your account: it goes to whoever
-        redeems it.
+        redeems the code.
       </p>
     </form>
   );

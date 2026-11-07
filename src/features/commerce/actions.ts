@@ -8,6 +8,7 @@ import { AccessError } from "@/lib/permissions";
 import { setActiveChild } from "@/features/children/active-child";
 import type { FormState } from "@/features/auth/schemas";
 import { logError } from "@/lib/observability/logger";
+import { consentFromForm } from "./consent";
 
 /**
  * Acquire a mission for a child.
@@ -43,6 +44,7 @@ export async function acquireMissionAction(
       childId,
       missionSlug,
       origin: await requestOrigin(),
+      consent: consentFromForm(formData),
     });
   } catch (error) {
     if (error instanceof AccessError) {
@@ -51,7 +53,9 @@ export async function acquireMissionAction(
       return { error: "Choose who this mission is for." };
     }
     if (error instanceof CheckoutError) {
-      return { error: error.message };
+      return error.reason === "consent_required"
+        ? { fieldErrors: { consent: error.message } }
+        : { error: error.message };
     }
     logError("acquire_mission_failed", error, { missionSlug });
     return { error: "We couldn't add that mission. Please try again." };

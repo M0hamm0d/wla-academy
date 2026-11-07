@@ -1,54 +1,38 @@
 import "server-only";
 
 import { createAdminClient } from "@/lib/supabase/admin";
-import { hashGiftToken, looksLikeGiftToken, newGiftToken, normaliseGiftEmail } from "./token";
+import { hashGiftToken, looksLikeGiftToken, newGiftToken } from "./token";
 
 /**
- * Reading a gift by its token, for the redemption page.
+ * Checking a gift code, for the redemption page (D-149).
  *
  * Service role, because no client role can read `mission_gifts`. It acts only
- * on a secret the caller presented (D-64 pattern: the secret authorises, this
- * reads), and returns only what that holder may see. Nothing here takes an id.
+ * on a secret the caller presented (the D-64 pattern: the secret authorises,
+ * this reads), and returns only what that holder may see. Nothing here takes an
+ * id or an address.
  */
-export type EmailCheck =
+export type CodeCheck =
   | { outcome: "matched"; claim: string }
-  | { outcome: "mismatch" }
   | { outcome: "invalid" }
-  | { outcome: "already_redeemed" };
+  | { outcome: "rate_limited" };
 
-/** Throws if the database can't answer, which is not the same as a wrong address. */
-export async function confirmGiftEmail(token: string, email: string): Promise<EmailCheck> {
-  if (!looksLikeGiftToken(token)) return { outcome: "invalid" };
+/**
+ * The code form's answer. Wrong, already used, never paid or no such gift all
+ * look the same. `client` identifies the network client for the attempt limit;
+ * the database stores only an HMAC of it. Throws only if the database can't
+ * answer, which is not the same as a wrong code.
+ */
+export async function confirmGiftCode(code: string, client: string): Promise<CodeCheck> {
   const { token: claim, hash: claimHash } = newGiftToken();
-  const { data, error } = await createAdminClient().rpc("confirm_gift_email", {
-    p_token_hash: hashGiftToken(token),
-    p_email: normaliseGiftEmail(email),
+  const { data, error } = await createAdminClient().rpc("confirm_gift_code", {
+    p_code: code,
+    p_client: client,
     p_claim_hash: claimHash,
   });
   if (error) throw error;
   if (data === "matched") return { outcome: "matched", claim };
-  if (data === "mismatch") return { outcome: "mismatch" };
-  if (data === "already_redeemed") return { outcome: "already_redeemed" };
+  if (data === "rate_limited") return { outcome: "rate_limited" };
   return { outcome: "invalid" };
-}
-
-/**
- * The code form's answer: a claim, or nothing else. Whether a gift exists, the
- * code expired or the attempts ran out all look the same. Throws only if the
- * database can't answer.
- */
-export async function confirmGiftCode(
-  email: string,
-  code: string,
-): Promise<{ outcome: "matched"; claim: string } | { outcome: "invalid" }> {
-  const { token: claim, hash: claimHash } = newGiftToken();
-  const { data, error } = await createAdminClient().rpc("confirm_gift_code", {
-    p_email: normaliseGiftEmail(email),
-    p_code: code,
-    p_claim_hash: claimHash,
-  });
-  if (error) throw error;
-  return data === "matched" ? { outcome: "matched", claim } : { outcome: "invalid" };
 }
 
 export type ClaimedGift = { missionId: string; missionTitle: string; missionSlug: string };

@@ -243,6 +243,17 @@ export async function ensureAccount(b, who, next = "/account") {
   });
   if (!res.ok) throw new Error(`couldn't create ${who}: HTTP ${res.status}`);
   await signIn(b, email, next);
+  // A dev server compiling after a code change can be slow to leave /login, or
+  // miss the first try: wait for the redirect, and only then sign in again.
+  for (let i = 0; i < 3; i++) {
+    for (let t = 0; t < 20 && /\/login/.test(await b.path()); t++) await sleep(500);
+    if (!/\/login/.test(await b.path())) break;
+    await b.goto(`/login?next=${encodeURIComponent(next)}`);
+    if (!/\/login/.test(await b.path())) break;
+    await b.fill("input[name=email]", email);
+    await b.fill("input[name=password]", PASSWORD);
+    await b.click(/sign in|log in/i, { selector: "button[type=submit]" });
+  }
   return email;
 }
 
@@ -273,7 +284,7 @@ export function childId(email, name) {
 
 /** Pay on Stripe's hosted test page with its published test card. */
 export async function payOnStripe(b) {
-  if (!(await b.waitUrl(/checkout\.stripe\.com/, 30000))) return { paid: false, reason: `never reached Stripe: ${await b.path()}` };
+  if (!(await b.waitUrl(/checkout\.stripe\.com/, 90000))) return { paid: false, reason: `never reached Stripe: ${await b.path()}` };
   const t0 = Date.now();
   while (Date.now() - t0 < 30000) { if (await b.eval("!!document.querySelector('#cardNumber')")) break; await sleep(300); }
   if (!(await b.eval("!!document.querySelector('#cardNumber')"))) return { paid: false, reason: "no card field" };
@@ -289,12 +300,32 @@ export async function payOnStripe(b) {
   return ok ? { paid: true } : { paid: false, reason: "no redirect back", text: (await b.text()).slice(0, 200) };
 }
 
+/** Stripe sessions and closure requests this run made, so cleanup can find them after their accounts are gone. */
+export const made = { sessions: new Set(), deletions: new Set(), since: new Date().toISOString() };
+// The deletion-ledger outbox (D-157) records every closure, hold and removal a
+// run makes; cleanup removes what was recorded after this point. Like the
+// Storage sweep, it assumes nothing else uses the local stack during a run.
+const outbox = sql(`select to_regclass('public.privacy_ledger_outbox') is not null`) === "t";
+made.outboxFrom = outbox ? Number(sql(`select coalesce(max(seq), 0) from privacy_ledger_outbox`)) : null;
+
+/** Tick both checkout statements (D-152): payment can't start without them. */
+export async function consent(b) {
+  await b.click(/access to start as soon as my payment is confirmed/i, { selector: "label" });
+  await b.click(/lose my right to cancel/i, { selector: "label" });
+}
+
 export function cleanup() {
   const like = `e2e-${RUN}-%@wla-e2e.test`;
+  const sessions = [...made.sessions].map((s) => `'${s}'`).join(",") || "''";
+  const deletions = [...made.deletions].map((d) => `'${d}'`).join(",") || "'00000000-0000-0000-0000-000000000000'";
   sql(`
-    delete from mission_gifts where recipient_email like '${like}' or purchaser_id in (select id from auth.users where email like '${like}');
+    delete from mission_gifts where purchaser_id in (select id from auth.users where email like '${like}') or stripe_session_id in (${sessions}) or stripe_session_id like 'cs_e2e_${RUN}%';
+    delete from checkout_intents where stripe_session_id in (${sessions}) or parent_id in (select id from auth.users where email like '${like}');
+    delete from privacy_deletions where id in (${deletions});
+    delete from gift_code_attempts where occurred_at >= '${made.since}';
     delete from stripe_events where id like 'evt_e2e_${RUN}%';
     delete from missions where slug like 'e2e-${RUN}-%';
     delete from auth.users where email like '${like}';
   `);
+  if (made.outboxFrom !== null) sql(`delete from privacy_ledger_outbox where seq > ${made.outboxFrom}`);
 }

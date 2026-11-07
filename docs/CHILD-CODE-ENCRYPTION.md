@@ -1,5 +1,7 @@
 # Child access-code encryption (D-143)
 
+The same key also encrypts each purchaser's viewable copy of a gift code (D-149), bound to the gift rather than to a child. `scripts/rotate-child-code-key.ts` re-seals both kinds of copy. If the key is lost, a purchaser chooses "Get a new code", which replaces the gift's code.
+
 A parent can view their child's active access code. Sign-in doesn't use this: it
 verifies the bcrypt hash and the keyed lookup in the database, exactly as before.
 

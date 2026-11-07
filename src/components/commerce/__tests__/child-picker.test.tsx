@@ -38,6 +38,11 @@ const createdBilal = (over = {}) => ({
   created: { childId: "c2", name: "Bilal", code: CODE, viewable: true, ...over },
 });
 const pay = () => screen.queryByRole("button", { name: /Continue to payment/ });
+/** Both checkout statements (D-152); payment can't be submitted without them. */
+const agree = () => {
+  fireEvent.click(screen.getByRole("checkbox", { name: /access to start as soon as/ }));
+  fireEvent.click(screen.getByRole("checkbox", { name: /lose my right to cancel/ }));
+};
 
 async function addBilal() {
   fireEvent.click(screen.getByRole("button", { name: "Add a new child" }));
@@ -68,6 +73,7 @@ describe("choosing or adding a child while buying (D-144)", () => {
   it("selecting an existing child submits that child", async () => {
     render(<PurchaseForm {...base} childProfiles={[amina, { id: "c3", display_name: "Sara" } as ChildProfileRow]} />);
     fireEvent.click(screen.getByRole("radio", { name: "Sara" }));
+    agree();
     fireEvent.click(pay()!);
     await waitFor(() => expect(acquire).toHaveBeenCalled());
     expect((acquire.mock.calls[0][2] as FormData).get("childId")).toBe("c3");
@@ -89,6 +95,7 @@ describe("choosing or adding a child while buying (D-144)", () => {
     expect(screen.getByRole("radio", { name: "Bilal" })).toBeChecked();
     expect(screen.getByTestId("child-code")).toHaveTextContent(CODE);
     expect(screen.getByRole("button", { name: "Copy code" })).toBeInTheDocument();
+    agree();
     fireEvent.click(pay()!);
     await waitFor(() => expect(acquire).toHaveBeenCalled());
     expect(acquire.mock.calls[0][0]).toBe("six-names");

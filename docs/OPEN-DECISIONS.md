@@ -132,17 +132,14 @@ the codebase — verified by search — so this requires no work.
 
 # 🕒 Deferred
 
-## OPEN-07 — Gift rules not yet decided · D-140
+## OPEN-07 — Gift rules not yet decided · D-140, D-149
 
-Gifting is built (D-140). These business rules are **not decided, and nothing has been invented for them**:
+**Updated 2026-11-06 (D-149).** The client document settles delivery and expiry: the purchaser receives the code and shares it, WLA holds no recipient address, and an unredeemed code doesn't expire. So the address-based items below are gone: there is no address to mistype, match or flood with emails, and the code form now has its own per-client limit. Still not decided, and nothing invented for them:
 
-- **Expiry:** a paid gift stays redeemable indefinitely.
 - **Refunds:** refunds aren't handled (D-20). A gift refunded in Stripe stays redeemable until someone acts; there is no admin action for it yet.
-- **Transfer or correction:** a mistyped recipient address can't be changed. There is no admin action for it yet.
 - **A mission unpublished after purchase:** the gift can still be redeemed, as an existing entitlement would still work.
-- **Who may redeem:** the link and the address prove the mailbox, so the account that redeems may use a different email from the gift's (D-140). Decide if the account's email must match.
-- **A site-wide limit on `/redeem` requests:** gifts are protected per link, per code and per gift (D-142, D-145), but request volume isn't limited. Anyone can make a gift recipient receive up to 30 code emails an hour by typing their address. Set a limit at the hosting edge before launch.
-- **Several gifts to one address:** they are handled one at a time, oldest first (D-145). A recipient isn't told a second gift is waiting until they redeem again.
+- **Edge request limit:** the code form limits each client to 10 wrong codes in 15 minutes, keyed on the first `x-forwarded-for` entry, which the host sets. A limit at the hosting edge is still worth adding before launch, and depends on the host (OPEN-27).
+- **Two gifts of one mission bought back to back:** a second checkout waits until the first's webhook has arrived, as with ordinary purchases.
 
 ## OPEN-24 — The website's own accounts · D-141
 
@@ -158,44 +155,16 @@ _OPEN-02 is resolved — moved to the Resolved section above. See
 
 ---
 
-## OPEN-14 — Retention and deletion policy · policy pending
+## OPEN-14 — Retention and deletion policy · ✅ resolved by D-148 (2026-11-06)
 
-**Split deliberately into two things.**
+**Resolved by the client document "Privacy Policy Updates" (6 November 2026).** The questions are answered, and the answers are built (D-148, `docs/PRIVACY-OPERATIONS.md`):
 
-**In scope technically:** account deletion. It does not exist at all today —
-only child-profile deletion does. For a UK product processing children's data
-this is likely a legal requirement, not a feature. I will build the capability.
+1. **Immediate, or a grace period?** Delete without undue delay, targeting 30 days from verified closure. In practice it completes at once unless a file can't yet be removed or a lawful hold applies. There is no grace period.
+2. **Export before deleting?** Yes, where feasible: "Download saved work" gives each child's missions, Trail and answers as one file, offered before closure and before removing a child.
+3. **What is kept after deletion?** Financial records as the law requires: a paid order, without the family. Lawful exceptions are documented holds. Backups age out on the provider's rotation, and a restore can't bring deleted data back into use.
+4. **Does deleting the parent delete the children?** Yes: every child profile, its records and its files. Deleting one child leaves the parent and siblings intact.
 
-**Requires your explicit approval:** the policy itself. I have not made and
-will not make a retention assumption on a children's product. Questions for
-product and privacy sign-off:
-
-1. Is deletion immediate and irreversible, or is there a grace period? A grace
-   period means retaining children's data after a deletion request, which needs
-   a stated justification.
-2. Can a family export their Mission Trail before deleting? Architecture §15
-   treats the Trail as the child's own record.
-3. What is retained after deletion for legal or financial reasons — Stripe
-   payment records, for instance — and for how long?
-4. Does deleting the parent account delete every child profile with it?
-
-**2026-10-04 (D-77):** still pending and now formally a blocker for three
-things only — how long published Mission Board contributions are retained,
-account deletion, and Trail export. Nothing else in the Enhancement Plan waits
-on it. The Mission Board inherits the current behaviour below (immediate
-removal on withdrawal or child deletion).
-
-**2026-10-04 (D-96), as built:** the Mission Board keeps nothing a family has
-withdrawn — withdrawal deletes the contribution at once, and child-profile or
-Trail-entry deletion cascades to it. Rejected contributions stay visible to the
-parent (who can withdraw them) and are not shown anywhere else. What remains
-blocked on this policy: retention of PUBLISHED contributions beyond the
-family's own withdrawal, parent-account deletion, and Trail export.
-
-**Current behaviour, unchanged pending your decision:** immediate hard delete
-of a child profile, cascading to entitlements, progress, state, responses and
-Mission Trail evidence. The confirmation names all three data categories.
-
+**Still open, and moved to OPEN-27:** the actual backup rotation period and the provider-side log retention, which need WLA's Supabase and hosting accounts. The earlier history of this item is in D-77 (superseded) and D-96.
 ---
 
 ## OPEN-15 — Authority documents cited by the Enhancement Plan are not in the repository · needs source files
@@ -288,6 +257,50 @@ can be published. `published` stays `false` until then.
 
 ---
 
+
+## OPEN-27 — Provider and backup verification · 🔴 needs WLA's accounts · D-148, D-153
+
+The application side is built. What can't be confirmed from the code is listed, with exactly what's needed, in `docs/PRIVACY-OPERATIONS.md` §7:
+
+- Supabase plan, region, backup type and retention (including Storage), and log retention, for both projects.
+- Whether the Academy is on Vercel: its region, log retention, and a Vercel Cron for `/api/cron/privacy` with `CRON_SECRET`. The exact `vercel.json` and variables are in `docs/PRIVACY-OPERATIONS.md` §2, ready to approve; not added yet.
+- Cloudflare's settings for the website.
+- Resend's domain, region and retention, with tracking off.
+- Stripe's entity and receipts.
+
+Nothing here invents a backup period.
+
+## OPEN-28 — The public website's privacy gaps · 🔴 needs the website's owner · D-153
+
+Found while inventorying; these are in the Lovable project, not this repository:
+
+- **Google Fonts** are loaded from Google's servers (`src/routes/__root.tsx`), which sends visitors' IP addresses to Google. Self-host them as the Academy does.
+- **The contact form sends nothing.** `contact.tsx` only shows a thank-you, so support enquiries are neither received nor kept. Decide where enquiries go, then apply the 12-month rule.
+- **Reviews** (`reviews`, which includes `reviewer_email`) have no removal or retention process. Apply "kept while necessary, then removed".
+- The website's own accounts and legacy `gifts` table (OPEN-24) hold personal data under a second Supabase project.
+
+The gift wording on its Buy a Gift page was corrected to match D-149, in the local copy only. The live site needs the same change in Lovable.
+
+Also needed in Lovable for gifting to work at all: `VITE_ACADEMY_URL` set to the Academy's address. Without it, Buy a Gift and `/redeem-gift` send visitors to `http://localhost:3000`. The website's `/admin/gifts` still shows the legacy `gifts` records with purchasers' names and emails. It doesn't display the old codes, but `adminListGifts` selects every column, so the codes still reach an administrator's browser (OPEN-24).
+
+## OPEN-30 — Where the deletion ledger is kept · 🔴 needs WLA · D-157
+
+Deletions are now written to a ledger that must survive a database restore, so it can't live in the database, or in this project's Storage (whose records are in the database). The code writes it to a directory (`PRIVACY_LEDGER_DIR`) under a key (`PRIVACY_LEDGER_KEY`). That works locally and on any server with a lasting disk. **Vercel has no lasting disk**, so for the Academy as intended, WLA must choose a separate, access-controlled place to keep it, for example a storage bucket in a different account with versioning turned on. Then a small sink for it is added beside the directory one.
+
+**Decide:**
+1. Where the ledger is kept, and who can read it: the restore operator only.
+2. Who holds `PRIVACY_LEDGER_KEY`, and where a copy is kept for a restore (not in the database, and not only in Vercel).
+3. How long ledger entries are kept. They are ids and dates only, and are needed for as long as any backup that predates them can be restored.
+
+**Until then:** closures run as before, and `/admin/privacy` warns that restoring an older backup could bring deleted families back. Do not restore a production backup without the ledger: the procedure in `docs/PRIVACY-OPERATIONS.md` §3 refuses to finish without one.
+
+## OPEN-29 — Terms & Conditions to align the checkout statements with · 🔴 needs WLA · D-152
+
+The site's `/terms` is still a placeholder. The checkout statements and the order confirmation follow the Consumer Contracts Regulations 2013, and link to the Terms once `NEXT_PUBLIC_TERMS_URL` is set. WLA should confirm the wording against its published Terms (14-day cancellation, digital content supplied at once) and give the URL.
+
+
+---
+
 # Summary
 
 |     | Item                  | Status                                     |
@@ -296,21 +309,25 @@ can be published. `published` stays `false` until then.
 | 02  | Typefaces             | 🔴 D-33 — method set, needs Lovable access |
 | 03  | Mission Build Brief   | ⛔                                         |
 | 05  | Child age             | ✅ D-26                                    |
-| 07  | Gift rules            | 🕒 D-140                                   |
+| 07  | Gift rules            | 🕒 D-140, D-149: refunds and unpublished missions only |
 | 08  | Transactional email   | ✅ D-27                                    |
 | 09  | Error monitoring      | ✅ D-28                                    |
 | 10  | Mission authoring     | ✅ D-29                                    |
 | 11  | Accessibility         | ✅ D-30                                    |
 | 12  | Kit retention         | ✅ D-31                                    |
 | 13  | Six Names assets      | ⛔                                         |
-| 14  | Retention policy      | 🔴 policy pending; capability in scope     |
+| 14  | Retention policy      | ✅ D-148                                   |
 | 20  | Review before publish | 🔴 needs you — see OPEN-20 below            |
 | 21  | Journal self-approval | ✅ D-130 — approval optional                |
 | 22  | Public Journal home   | ✅ D-131 — Lovable, via the WLA API         |
 | 23  | Medium source         | ⛔ needs the Medium export                  |
 | 24  | Website's own accounts | 🔴 needs you — see OPEN-24 above           |
+| 27  | Provider and backup verification | 🔴 needs WLA's accounts      |
+| 28  | Website privacy gaps  | 🔴 needs the website's owner               |
+| 29  | Terms for checkout    | 🔴 needs WLA                               |
+| 30  | Deletion ledger location | 🔴 needs WLA: blocks a safe restore      |
 
-**13 resolved · 1 deferred · 3 need you (OPEN-14, OPEN-20, OPEN-24) · 1 blocked on source material (OPEN-23).**
+**14 resolved · 1 deferred · 5 need you (OPEN-20, OPEN-24, OPEN-27, OPEN-28, OPEN-29) · 1 blocked on source material (OPEN-23).**
 
 ---
 

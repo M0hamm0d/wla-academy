@@ -1,21 +1,19 @@
 import { z } from "zod";
 
-export const recipientEmailSchema = z
-  .string()
-  .trim()
-  .min(1, "Enter the recipient's email address.")
-  .max(254, "That email address is too long.")
-  .email("Enter a valid email address.");
+/**
+ * A gift code (D-149): twelve characters, however it was typed or pasted —
+ * with spaces or hyphens, in lower case, or with a full stop after it.
+ */
+export const GIFT_CODE_PATTERN = /^[ABCDEFGHJKMNPQRSTVWXYZ23456789]{12}$/;
 
-export const confirmEmailSchema = z
-  .string()
-  .trim()
-  .min(1, "Enter the email address this gift was sent to.")
-  .max(254, "That email address is too long.")
-  .email("Enter a valid email address.");
-
-/** Eight characters, however it was typed: spaces, a hyphen, lower case. */
 export const giftCodeSchema = z
   .string()
-  .transform((v) => v.replace(/[\s-]/g, "").toUpperCase())
-  .pipe(z.string().regex(/^[A-Z0-9]{8}$/, "Enter the eight-character code from the email."));
+  .max(64, "Enter the twelve-character gift code.")
+  .transform((v) => v.replace(/[^A-Za-z0-9]/g, "").toUpperCase())
+  .pipe(z.string().regex(GIFT_CODE_PATTERN, "Enter the twelve-character gift code, for example ABCD-EFGH-JKMN."));
+
+/** How a code is shown and shared: three groups of four. */
+export function formatGiftCode(code: string): string {
+  const c = code.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return c.length === 12 ? `${c.slice(0, 4)}-${c.slice(4, 8)}-${c.slice(8)}` : c;
+}

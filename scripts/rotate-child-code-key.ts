@@ -1,4 +1,5 @@
-// Re-encrypt every active child code copy under the current key (D-143).
+// Re-encrypt every active child code copy, and every purchaser's gift code
+// copy, under the current key (D-143, D-149).
 //
 //   CHILD_CODE_ENCRYPTION_KEY=<new> CHILD_CODE_ENCRYPTION_KEY_PREVIOUS=<old> \
 //   NEXT_PUBLIC_SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... \
@@ -17,28 +18,48 @@ const keys = keysFromEnv();
 if (!keys.current) throw new Error("Set CHILD_CODE_ENCRYPTION_KEY to the new key.");
 
 const headers = { apikey: service, Authorization: `Bearer ${service}`, "Content-Type": "application/json" };
-const table = `${url.replace(/\/$/, "")}/rest/v1/child_access_credentials`;
 
-const list = await fetch(
-  `${table}?select=id,child_id,code_ciphertext&revoked_at=is.null&code_ciphertext=not.is.null`,
-  { headers },
-);
-if (!list.ok) throw new Error(`Couldn't read the copies (HTTP ${list.status}).`);
-const rows = (await list.json()) as { id: string; child_id: string; code_ciphertext: string }[];
+type Counts = { total: number; moved: number; already: number; unreadable: number; failed: number };
 
-let moved = 0, already = 0, unreadable = 0, failed = 0;
-for (const row of rows) {
-  if (isUnderCurrentKey(row.code_ciphertext, keys)) { already++; continue; }
-  try {
-    const sealed = resealCode(row.code_ciphertext, { childId: row.child_id, credentialId: row.id }, keys);
-    const swap = await fetch(
-      `${table}?id=eq.${row.id}&code_ciphertext=eq.${encodeURIComponent(row.code_ciphertext)}&revoked_at=is.null`,
-      { method: "PATCH", headers: { ...headers, Prefer: "return=minimal" }, body: JSON.stringify({ code_ciphertext: sealed }) },
-    );
-    if (swap.ok) moved++; else failed++;
-  } catch (error) {
-    if (error instanceof CodeCopyError) unreadable++; else failed++;
+/** Re-seal every copy in one table: child codes (D-143), and purchasers' gift codes (D-149). */
+async function rotate(
+  path: string,
+  query: string,
+  bindingFor: (row: Record<string, string>) => Parameters<typeof resealCode>[1],
+  guard: string,
+): Promise<Counts> {
+  const table = `${url!.replace(/\/$/, "")}/rest/v1/${path}`;
+  const list = await fetch(`${table}?${query}`, { headers });
+  if (!list.ok) throw new Error(`Couldn't read the copies in ${path} (HTTP ${list.status}).`);
+  const rows = (await list.json()) as Record<string, string>[];
+  const c: Counts = { total: rows.length, moved: 0, already: 0, unreadable: 0, failed: 0 };
+  for (const row of rows) {
+    if (isUnderCurrentKey(row.code_ciphertext, keys)) { c.already++; continue; }
+    try {
+      const sealed = resealCode(row.code_ciphertext, bindingFor(row), keys);
+      const swap = await fetch(
+        `${table}?id=eq.${row.id}&code_ciphertext=eq.${encodeURIComponent(row.code_ciphertext)}&${guard}`,
+        { method: "PATCH", headers: { ...headers, Prefer: "return=minimal" }, body: JSON.stringify({ code_ciphertext: sealed }) },
+      );
+      if (swap.ok) c.moved++; else c.failed++;
+    } catch (error) {
+      if (error instanceof CodeCopyError) c.unreadable++; else c.failed++;
+    }
   }
+  return c;
 }
-console.log(JSON.stringify({ total: rows.length, moved, already, unreadable, failed }));
-if (failed > 0 || unreadable > 0) process.exitCode = 1;
+
+const children = await rotate(
+  "child_access_credentials",
+  "select=id,child_id,code_ciphertext&revoked_at=is.null&code_ciphertext=not.is.null",
+  (row) => ({ childId: row.child_id, credentialId: row.id }),
+  "revoked_at=is.null",
+);
+const gifts = await rotate(
+  "mission_gifts",
+  "select=id,code_ciphertext&status=eq.paid&code_ciphertext=not.is.null",
+  (row) => ({ giftId: row.id }),
+  "status=eq.paid",
+);
+console.log(JSON.stringify({ children, gifts }));
+if (children.failed + children.unreadable + gifts.failed + gifts.unreadable > 0) process.exitCode = 1;

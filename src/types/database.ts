@@ -60,6 +60,11 @@ export type ChildProfileRow = {
   birth_year: number | null;
   /** Makes adding a child safe to retry (D-144). */
   creation_key: string | null;
+  /**
+   * Set once a closure covers this profile (D-148). From then on no parent
+   * path returns it, though the row stays until the deletion finishes.
+   */
+  closing_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -94,21 +99,22 @@ export type MissionGiftRow = {
   id: string;
   mission_id: string;
   purchaser_id: string | null;
-  recipient_email: string;
   stripe_session_id: string;
   stripe_payment_intent_id: string | null;
   amount_minor: number;
   currency: string;
   status: GiftStatus;
-  redeem_token_hash: string | null;
   claim_hash: string | null;
   claim_expires_at: string | null;
-  confirm_failures: number;
-  code_hash: string | null;
-  code_expires_at: string | null;
-  code_failures: number;
-  code_sent_at: string | null;
-  link_sent_at: string | null;
+  /** HMAC of the code (D-149). Never the code itself. */
+  code_lookup: string | null;
+  /** The purchaser's AES-GCM copy, opened only on the server. */
+  code_ciphertext: string | null;
+  code_issued_at: string | null;
+  early_supply_consent_at: string | null;
+  cancellation_ack_at: string | null;
+  consent_wording: string | null;
+  confirmation_sent_at: string | null;
   paid_at: string | null;
   redeemed_at: string | null;
   redeemed_by: string | null;
@@ -149,6 +155,15 @@ export type MissionResourceRow = {
 /** F7 — media a screen shows, pinned to its version (0032). Never read by a client role. */
 /** Mission Board (0036): no author, no counts — by construction. */
 export type BoardStatus = "pending_permission" | "pending_moderation" | "published" | "rejected";
+export type BoardRejectedReason = "cannot_anonymise" | "not_suitable";
+/** What the anonymity check found worth a second look (D-151). Never proof of anonymity. */
+export type BoardFlag = "names" | "contact" | "school" | "location" | "age" | "possible_full_name";
+export type BoardModerationAction = "publish" | "reject" | "keep_private" | "unpublish" | "save" | "remove";
+
+/** Account closure and retention (D-148). */
+export type PrivacySubject = "parent_account" | "child_profile";
+export type PrivacyDeletionStatus = "in_progress" | "held" | "failed" | "completed";
+export type HoldSubject = PrivacySubject | "board_contribution" | "security_logs";
 export type BoardItem = { mission_slug: string; mission_title: string; lab: WlaLab; text: string; approach: string | null; curated: boolean; published_at: string };
 
 export type MissionAssetKind = "image" | "diagram" | "map" | "animation" | "audio" | "video";
@@ -233,12 +248,19 @@ export type StripeEventRow = {
 export type CheckoutIntentRow = {
   id: string;
   stripe_session_id: string;
-  parent_id: string;
-  child_id: string;
+  /** Null once the account closed: the paid record stays, without the family (D-148). */
+  parent_id: string | null;
+  child_id: string | null;
   mission_id: string;
   amount_minor: number;
   currency: string;
   created_at: string;
+  paid_at: string | null;
+  stripe_payment_intent_id: string | null;
+  early_supply_consent_at: string | null;
+  cancellation_ack_at: string | null;
+  consent_wording: string | null;
+  confirmation_sent_at: string | null;
 };
 
 export type MissionEvidenceRow = {
@@ -623,7 +645,13 @@ export type Database = {
       };
       mission_gifts: Table<
         MissionGiftRow,
-        "mission_id" | "recipient_email" | "stripe_session_id" | "amount_minor" | "currency"
+        | "mission_id"
+        | "stripe_session_id"
+        | "amount_minor"
+        | "currency"
+        | "early_supply_consent_at"
+        | "cancellation_ack_at"
+        | "consent_wording"
       >;
       checkout_intents: Table<
         CheckoutIntentRow,
@@ -633,6 +661,9 @@ export type Database = {
         | "mission_id"
         | "amount_minor"
         | "currency"
+        | "early_supply_consent_at"
+        | "cancellation_ack_at"
+        | "consent_wording"
       >;
       mission_versions: {
         Row: MissionVersionRow;
@@ -868,7 +899,11 @@ export type Database = {
       child_session_board_offer: { Args: { p_token: string; p_evidence_id: string }; Returns: string | null };
       board_family_contributions: {
         Args: Record<string, never>;
-        Returns: { id: string; child_id: string; child_name: string; mission_title: string; text: string; status: BoardStatus; created_at: string; evidence_id: string }[];
+        Returns: {
+          id: string; child_id: string; child_name: string; mission_title: string; text: string;
+          status: BoardStatus; created_at: string; evidence_id: string;
+          rejected_reason: BoardRejectedReason | null; delete_after: string | null;
+        }[];
       };
       child_session_board_offers: { Args: { p_token: string }; Returns: { evidence_id: string; status: BoardStatus }[] };
       board_permit: { Args: { p_id: string; p_allow: boolean }; Returns: undefined };
@@ -877,9 +912,18 @@ export type Database = {
       child_session_board: { Args: { p_token: string }; Returns: BoardItem[] };
       admin_board_queue: {
         Args: Record<string, never>;
-        Returns: { id: string; mission_title: string; lab: WlaLab; text: string; status: BoardStatus; curated: boolean; approach: string | null; created_at: string; moderated_at: string | null }[];
+        Returns: {
+          id: string; mission_title: string; lab: WlaLab; text: string; status: BoardStatus; curated: boolean;
+          approach: string | null; created_at: string; moderated_at: string | null; flags: BoardFlag[];
+        }[];
       };
-      admin_board_moderate: { Args: { p_id: string; p_action: "publish" | "reject" | "unpublish" | "save"; p_text: string | null; p_curated: boolean | null; p_approach: string | null }; Returns: undefined };
+      admin_board_moderate: {
+        Args: {
+          p_id: string; p_action: BoardModerationAction; p_text: string | null; p_curated: boolean | null;
+          p_approach: string | null; p_anonymity_confirmed?: boolean;
+        };
+        Returns: undefined;
+      };
       admin_draft_definition: {
         Args: { p_mission_id: string; p_version: number };
         Returns: Json;
@@ -1028,18 +1072,80 @@ export type Database = {
           access_code_status: string; code_last_used_at: string | null;
         }[];
       };
-      confirm_gift_email: {
-        Args: { p_token_hash: string; p_email: string; p_claim_hash: string };
-        Returns: string;
+      activate_paid_gift: {
+        Args: { p_session_id: string; p_payment_intent: string | null };
+        Returns: { outcome: "activated" | "already" | "not_found"; gift_id: string | null; code: string | null }[];
       };
-      issue_gift_code: {
-        Args: { p_email: string };
-        Returns: { gift_id: string; mission_id: string; code: string }[];
+      store_gift_code_copy: {
+        Args: { p_gift_id: string; p_code: string; p_ciphertext: string };
+        Returns: boolean;
       };
-      withdraw_gift_code: { Args: { p_gift_id: string; p_code: string }; Returns: undefined };
+      reissue_gift_code: { Args: { p_gift_id: string; p_purchaser_id: string }; Returns: string | null };
+      purchaser_gifts: {
+        Args: { p_purchaser_id: string };
+        Returns: {
+          id: string; mission_title: string; mission_slug: string; status: GiftStatus;
+          created_at: string; paid_at: string | null; redeemed_at: string | null;
+          code_issued_at: string | null; code_ciphertext: string | null;
+        }[];
+      };
       confirm_gift_code: {
-        Args: { p_email: string; p_code: string; p_claim_hash: string };
+        Args: { p_code: string; p_client: string; p_claim_hash: string };
+        Returns: "matched" | "invalid" | "rate_limited";
+      };
+      privacy_begin_closure: {
+        Args: { p_subject_type: PrivacySubject; p_subject_id: string; p_parent_id: string; p_requested_by: "parent" | "admin" };
+        Returns: { outcome: "begun" | "not_found" | "admin_account" | "invalid"; deletion_id: string | null; status: PrivacyDeletionStatus | null }[];
+      };
+      privacy_pending_files: { Args: { p_deletion: string }; Returns: { bucket: string; path: string }[] };
+      privacy_record_files: {
+        Args: { p_deletion: string; p_bucket: string; p_removed: string[]; p_failed: string[]; p_error: string | null };
+        Returns: undefined;
+      };
+      privacy_finish_closure: {
+        Args: { p_deletion: string };
+        Returns: "files_pending" | "held" | "data_deleted" | "completed" | "not_found";
+      };
+      privacy_complete_closure: { Args: { p_deletion: string }; Returns: "completed" | "not_ready" | "not_found" };
+      privacy_record_failure: { Args: { p_deletion: string; p_step: string; p_error: string }; Returns: undefined };
+      privacy_open_deletions: {
+        Args: Record<string, never>;
+        Returns: { id: string; subject_type: PrivacySubject; parent_id: string; step: string }[];
+      };
+      privacy_orphan_files: { Args: { p_limit?: number }; Returns: { bucket: string; path: string }[] };
+      privacy_retention_run: { Args: Record<string, never>; Returns: Json };
+      admin_privacy_deletions: {
+        Args: Record<string, never>;
+        Returns: {
+          id: string; subject_type: PrivacySubject; requested_by: "parent" | "admin"; requested_at: string;
+          due_by: string; status: PrivacyDeletionStatus; step: string; attempts: number;
+          last_error: string | null; completed_at: string | null; overdue: boolean;
+          files_pending: number; children: number; summary: Json;
+        }[];
+      };
+      admin_retention_holds: {
+        Args: Record<string, never>;
+        Returns: { id: string; subject_type: HoldSubject; subject_id: string | null; reason: string; placed_at: string; review_by: string; review_due: boolean }[];
+      };
+      admin_place_hold: {
+        Args: { p_subject_type: HoldSubject; p_subject_id: string | null; p_reason: string; p_review_by: string | null };
         Returns: string;
+      };
+      admin_review_hold: { Args: { p_id: string; p_release: boolean; p_review_by: string | null }; Returns: undefined };
+      admin_retention_runs: { Args: { p_limit?: number }; Returns: { ran_at: string; results: Json; error: string | null }[] };
+      // The deletion ledger outside the database (D-157).
+      privacy_ledger_pending: {
+        Args: { p_limit?: number };
+        Returns: { seq: number; event_id: string; event: string; payload: Json; created_at: string }[];
+      };
+      privacy_ledger_mark_shipped: {
+        Args: { p_event_ids: string[]; p_ledger_seq: number; p_chain: string };
+        Returns: undefined;
+      };
+      privacy_ledger_request_shipped: { Args: { p_deletion: string }; Returns: boolean };
+      admin_privacy_ledger_status: {
+        Args: Record<string, never>;
+        Returns: { unshipped: number; oldest_unshipped: string | null; last_shipped: string | null; ledger_seq: number | null }[];
       };
       redeem_mission_gift: {
         Args: { p_claim_hash: string; p_child_id: string; p_parent_id: string };
@@ -1049,18 +1155,20 @@ export type Database = {
         Args: { p_limit?: number };
         Returns: {
           id: string; created_at: string; mission_title: string;
-          purchaser_email: string | null; recipient_email: string;
+          purchaser_email: string | null;
           amount_minor: number; currency: string; status: GiftStatus;
           paid_at: string | null; redeemed_at: string | null;
           redeemed_by_email: string | null; redeemed_child_name: string | null;
+          consent_recorded: boolean; confirmation_sent: boolean;
         }[];
       };
       admin_orders: {
         Args: { p_limit?: number };
         Returns: {
-          id: string; created_at: string; parent_email: string;
-          child_name: string; mission_title: string;
+          id: string; created_at: string; parent_email: string | null;
+          child_name: string | null; mission_title: string;
           amount_minor: number; currency: string; state: string;
+          consent_recorded: boolean; confirmation_sent: boolean;
         }[];
       };
       admin_analytics: {

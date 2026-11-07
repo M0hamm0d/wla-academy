@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { sendGiftCodeEmail, sendGiftEmail, sendMissionAccessEmail } from "../send";
+import { isWorthRetrying, sendGiftPurchaseEmail, sendMissionAccessEmail } from "../send";
+import { CANCELLATION_ACKNOWLEDGEMENT, EARLY_SUPPLY_CONSENT, consentWording } from "@/features/commerce/consent";
 import { devMailpitUrl } from "../dev-mailpit";
 
 const repo = join(__dirname, "../../../..");
@@ -11,11 +12,19 @@ const webhook = readFileSync(
 );
 const send = readFileSync(join(repo, "src/lib/email/send.ts"), "utf8");
 
+const ORDER = {
+  amountMinor: 1200,
+  currency: "GBP",
+  paidAt: "2026-11-06T10:00:00Z",
+  consentWording: consentWording(),
+  consentRecorded: true,
+};
 const EMAIL = {
   to: "parent@example.com",
   missionTitle: "Six Names",
   childName: "Amina",
   missionUrl: "http://localhost:3000/academy/missions/six-names",
+  ...ORDER,
 };
 
 afterEach(() => {
@@ -36,9 +45,11 @@ describe("transactional email", () => {
 
   it("never logs the recipient or the child's name", () => {
     // Brief §46 — no unnecessary child information anywhere it needn't be.
-    const logCall = send.slice(send.indexOf("console.info"), send.indexOf("return { sent: false, reason: \"not_configured\" }"));
-    expect(logCall).not.toContain("email.to");
-    expect(logCall).not.toContain("childName");
+    const logCalls = [...send.matchAll(/console\.(info|error)\(([^;]*)\);/g)].map((m) => m[2]);
+    expect(logCalls.length).toBeGreaterThan(0);
+    for (const call of logCalls) {
+      expect(call).not.toMatch(/\bto\b|childName|code|text/);
+    }
   });
 
   it("never throws, whatever the provider does", async () => {
@@ -75,9 +86,45 @@ describe("transactional email", () => {
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(body.to).toBe("parent@example.com");
-    expect(body.subject).toBe("Amina now has Six Names");
+    expect(body.subject).toBe("Order confirmed: Amina now has Six Names");
     expect(body.text).toContain("Amina now has Six Names.");
     expect(body.text).toContain("/academy/missions/six-names");
+  });
+
+  it("is the order confirmation on a durable medium: price, date and both statements as agreed (D-152)", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_FROM", "test@example.com");
+    vi.stubEnv("NEXT_PUBLIC_TERMS_URL", "https://site.test/terms");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    await sendMissionAccessEmail(EMAIL);
+    const text = JSON.parse(fetchMock.mock.calls[0][1].body).text as string;
+    expect(text).toContain("£12.00");
+    expect(text).toContain("6 November 2026");
+    expect(text).toContain(EARLY_SUPPLY_CONSENT);
+    expect(text).toContain(CANCELLATION_ACKNOWLEDGEMENT);
+    expect(text).toMatch(/right to cancel no longer applies/);
+    expect(text).toContain("https://site.test/terms");
+    expect(text).toMatch(/Keep this email as your order confirmation/);
+  });
+
+  it("an order placed before consent was recorded doesn't claim it was given", async () => {
+    vi.stubEnv("RESEND_API_KEY", "re_test");
+    vi.stubEnv("EMAIL_FROM", "test@example.com");
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    vi.stubGlobal("fetch", fetchMock);
+    await sendMissionAccessEmail({ ...EMAIL, consentRecorded: false, consentWording: null });
+    const text = JSON.parse(fetchMock.mock.calls[0][1].body).text as string;
+    expect(text).not.toContain(EARLY_SUPPLY_CONSENT);
+    expect(text).not.toMatch(/no longer applies/);
+  });
+
+  it("only failures that might work next time are worth Stripe's retry", () => {
+    expect(isWorthRetrying("exception")).toBe(true);
+    expect(isWorthRetrying("http_503")).toBe(true);
+    expect(isWorthRetrying("http_429")).toBe(true);
+    expect(isWorthRetrying("not_configured")).toBe(false);
+    expect(isWorthRetrying("http_422")).toBe(false);
   });
 
   it("carries no upsell or marketing", () => {
@@ -97,12 +144,14 @@ describe("email is wired after the entitlement, never before", () => {
     expect(grantAt).toBeLessThan(emailAt);
   });
 
-  it("a send failure cannot fail the webhook", () => {
-    // Stripe retries on non-2xx; a retried webhook must not hinge on email.
+  it("the helper never throws; only a send worth retrying asks Stripe to deliver again (D-152)", () => {
     const helper = webhook.slice(webhook.indexOf("async function notifyAccessGranted"));
     expect(helper).toContain("try {");
     expect(helper).toContain("catch");
     expect(helper).not.toContain("status: 500");
+    const call = webhook.slice(webhook.indexOf("if (active && !intent.confirmation_sent_at)"), webhook.indexOf("return duplicate", webhook.indexOf("if (active && !intent.confirmation_sent_at)")));
+    expect(call).toContain("isWorthRetrying(outcome.reason)");
+    expect(call).toContain("confirmation_sent_at");
   });
 
   it("no notification system was introduced", () => {
@@ -119,94 +168,68 @@ describe("email is wired after the entitlement, never before", () => {
     for (const forbidden of ["notification", "digest", "reminder", "campaign"]) {
       expect(code).not.toContain(forbidden);
     }
-    // Exactly the three transactional messages, by name: the access confirmation
-    // (D-27), the gift link (D-140) and the gift code (D-145). No message catalogue.
+    // Exactly the two order confirmations, by name: a mission (D-27, D-152) and
+    // a gift with its code, to the purchaser (D-149). No message to a gift's
+    // recipient, and no message catalogue.
     const exported = [...send.matchAll(/^export async function (\w+)/gm)].map((m) => m[1]);
-    expect(exported.sort()).toEqual(["sendGiftCodeEmail", "sendGiftEmail", "sendMissionAccessEmail"]);
-    expect(send.match(/^export (async )?function/gm)).toHaveLength(3);
+    expect(exported.sort()).toEqual(["sendGiftPurchaseEmail", "sendMissionAccessEmail"]);
+    expect(send).not.toMatch(/recipient_?email|redeemUrl/i);
   });
 });
 
-describe("the gift email (D-140)", () => {
-  const GIFT = {
-    to: "recipient@example.com",
-    missionTitle: "Six Names",
-    redeemUrl: "https://academy.test/redeem?token=SECRET_TOKEN",
-  };
-
-  it("carries the mission, the call to action and the link", async () => {
-    vi.stubEnv("RESEND_API_KEY", "re_test");
-    vi.stubEnv("EMAIL_FROM", "test@example.com");
-    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200 });
-    vi.stubGlobal("fetch", fetcher);
-    await expect(sendGiftEmail(GIFT)).resolves.toEqual({ sent: true });
-    const body = JSON.parse(fetcher.mock.calls[0][1].body);
-    expect(body.to).toBe(GIFT.to);
-    expect(body.subject).toContain("Six Names");
-    expect(body.text).toContain("Redeem your gift");
-    expect(body.text).toContain(GIFT.redeemUrl);
-  });
-
-  it("never logs the link or the address, whatever happens", async () => {
-    const logged: string[] = [];
-    for (const level of ["info", "error", "warn", "log"] as const) {
-      vi.spyOn(console, level).mockImplementation((...a) => { logged.push(JSON.stringify(a)); });
-    }
-    vi.stubEnv("RESEND_API_KEY", "");
-    vi.stubEnv("EMAIL_FROM", "");
-    await sendGiftEmail(GIFT);
-    vi.stubEnv("RESEND_API_KEY", "re_test");
-    vi.stubEnv("EMAIL_FROM", "test@example.com");
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
-    await sendGiftEmail(GIFT);
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("SECRET_TOKEN in message")));
-    await expect(sendGiftEmail(GIFT)).resolves.toEqual({ sent: false, reason: "exception" });
-    expect(logged.join()).not.toContain("SECRET_TOKEN");
-    expect(logged.join()).not.toContain("recipient@example.com");
-  });
-});
-
-describe("the gift code email (D-145)", () => {
-  const CODE_MAIL = { to: "r@example.test", missionTitle: "Six Names", code: "ABCD-2345" };
+describe("the gift purchase email (D-149)", () => {
+  const GIFT = { to: "buyer@example.test", missionTitle: "Six Names", code: "ABCD-EFGH-JKMN", ...ORDER };
   beforeEach(() => {
     vi.stubEnv("NODE_ENV", "test");
     vi.stubEnv("WLA_DEV_MAILPIT_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://academy.test");
   });
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
   });
 
-  it("carries the code only in the body, and logs neither it nor the address", async () => {
+  it("goes to the purchaser with the code to share, how to redeem, and the order confirmation", async () => {
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv("EMAIL_FROM", "a@b.test");
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("fetch", fetchMock);
-    const logs = [vi.spyOn(console, "info"), vi.spyOn(console, "error")];
-    await expect(sendGiftCodeEmail(CODE_MAIL)).resolves.toEqual({ sent: true });
+    await expect(sendGiftPurchaseEmail(GIFT)).resolves.toEqual({ sent: true });
     const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body.text).toContain("ABCD-2345");
-    expect(body.subject).not.toContain("ABCD-2345");
-    expect(body.text).toMatch(/15 minutes/);
-    for (const log of logs) expect(JSON.stringify(log.mock.calls)).not.toMatch(/ABCD-2345|r@example/);
-    logs.forEach((l) => l.mockRestore());
+    expect(body.to).toBe("buyer@example.test");
+    expect(body.subject).not.toContain("ABCD");
+    expect(body.text).toContain("ABCD-EFGH-JKMN");
+    expect(body.text).toContain("https://academy.test/redeem");
+    expect(body.text).toMatch(/doesn't expire/);
+    expect(body.text).toContain(CANCELLATION_ACKNOWLEDGEMENT);
+    expect(body.text).toContain("£12.00");
   });
 
-  it("a failed send says so and doesn't throw", async () => {
+  it("logs neither the code nor the address, whatever happens", async () => {
+    const logged: string[] = [];
+    for (const level of ["info", "error", "warn", "log"] as const) {
+      vi.spyOn(console, level).mockImplementation((...a) => { logged.push(JSON.stringify(a)); });
+    }
+    vi.stubEnv("RESEND_API_KEY", "");
+    vi.stubEnv("EMAIL_FROM", "");
+    await sendGiftPurchaseEmail(GIFT);
     vi.stubEnv("RESEND_API_KEY", "re_test");
     vi.stubEnv("EMAIL_FROM", "a@b.test");
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500 }));
-    await expect(sendGiftCodeEmail(CODE_MAIL)).resolves.toEqual({ sent: false, reason: "http_500" });
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network")));
-    await expect(sendGiftCodeEmail(CODE_MAIL)).resolves.toEqual({ sent: false, reason: "exception" });
+    await expect(sendGiftPurchaseEmail(GIFT)).resolves.toEqual({ sent: false, reason: "http_500" });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("ABCD-EFGH-JKMN in message")));
+    await expect(sendGiftPurchaseEmail(GIFT)).resolves.toEqual({ sent: false, reason: "exception" });
+    expect(logged.join()).not.toContain("ABCD-EFGH-JKMN");
+    expect(logged.join()).not.toContain("buyer@example.test");
   });
 
   it("without configuration it sends nothing", async () => {
     vi.stubEnv("RESEND_API_KEY", "");
     vi.stubEnv("EMAIL_FROM", "");
+    vi.spyOn(console, "info").mockImplementation(() => {});
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
-    await expect(sendGiftCodeEmail(CODE_MAIL)).resolves.toEqual({ sent: false, reason: "not_configured" });
+    await expect(sendGiftPurchaseEmail(GIFT)).resolves.toEqual({ sent: false, reason: "not_configured" });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

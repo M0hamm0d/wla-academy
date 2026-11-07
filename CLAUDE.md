@@ -67,7 +67,9 @@ functions, which derive the child from the token inside the database and never
 take a child id as an argument.
 
 `src/lib/supabase/admin.ts` bypasses RLS. Its only legitimate uses are the
-Stripe webhook, gift purchase and redemption (D-140), signing a Mission Kit file for a child
+Stripe webhook, gift purchase and redemption (D-140, D-149), account closure and
+child-profile deletion **after** the parent or an erasure request is verified
+(D-148), copying the deletion ledger outside the database (D-157), signing a Mission Kit file for a child
 session **after** `child_session_resource_path` has authorised it (D-64),
 signing a Journal image for a private preview link **after**
 `journal_preview_media_path` has authorised it (D-134), storing and reading the

@@ -9,6 +9,8 @@ import { listChildren } from "@/features/children/queries";
 import { requireParent } from "@/lib/permissions";
 import { OpenChildMissions } from "@/components/account/open-child-missions";
 import { logError } from "@/lib/observability/logger";
+import { PurchasedGifts } from "@/components/commerce/purchased-gifts";
+import { listPurchasedGifts, type PurchasedGift } from "@/features/gifts/purchaser";
 
 export const metadata = { title: "Account" };
 
@@ -24,6 +26,7 @@ export default async function AccountPage() {
   let email: string | undefined;
   let children: { id: string; display_name: string }[] = [];
   let board: Awaited<ReturnType<typeof familyContributions>> = [];
+  let gifts: PurchasedGift[] = [];
   let perChild: {
     id: string;
     name: string;
@@ -37,10 +40,15 @@ export default async function AccountPage() {
     // Each child's missions and access code, for the whole family in three
     // reads (LOW-1) — scoped to this parent inside the queries.
     let family: Awaited<ReturnType<typeof getFamilyMissionCollections>>;
-    [children, board, family] = await Promise.all([
+    [children, board, family, gifts] = await Promise.all([
       listChildren(),
       familyContributions(),
       getFamilyMissionCollections(),
+      // Secondary: the account still loads if gifts can't be read.
+      listPurchasedGifts().catch((error) => {
+        logError("account_gifts_failed", error);
+        return [] as PurchasedGift[];
+      }),
     ]);
     perChild = family.map((c) => ({
       ...c,
@@ -148,8 +156,8 @@ export default async function AccountPage() {
 
       {/*
         Privacy and permissions — Plan §1 keeps them in the account area.
-        States only what the Academy already does (Architecture §3, §15, §16;
-        D-58, D-73); the retention policy itself is OPEN-14 and is not invented.
+        States only what the Academy does (Architecture §3, §15, §16; D-58,
+        D-73) and the approved retention policy (D-148).
       */}
       <section
         aria-labelledby="privacy-permissions"
@@ -187,8 +195,12 @@ export default async function AccountPage() {
             )}
           </li>
           <li>
-            Deleting a child profile deletes their missions, progress and
-            Mission Trail.
+            Deleting a child profile deletes their missions, progress, Mission
+            Trail and its files. Other profiles aren&rsquo;t affected.
+          </li>
+          <li>
+            Nothing is deleted because an account hasn&rsquo;t been used for a
+            while: missions and saved work stay while the account is open.
           </li>
         </ul>
         {board.length > 0 ? (
@@ -199,6 +211,43 @@ export default async function AccountPage() {
             something, you&rsquo;ll decide here.
           </p>
         )}
+      </section>
+
+      {/* Gifts this parent bought: the codes to share (D-149). */}
+      {gifts.length > 0 && (
+        <section
+          aria-labelledby="account-gifts"
+          className="mt-[var(--space-2xl)] border-t border-[var(--color-border)] pt-[var(--space-l)]"
+        >
+          <h2 id="account-gifts" className="text-[length:var(--text-h3)]">
+            Gifts you&rsquo;ve bought
+          </h2>
+          <PurchasedGifts gifts={gifts} siteUrl={process.env.NEXT_PUBLIC_SITE_URL ?? ""} />
+        </section>
+      )}
+
+      {/* Keeping saved work, and closing the account (D-148). */}
+      <section
+        aria-labelledby="account-data"
+        className="mt-[var(--space-2xl)] border-t border-[var(--color-border)] pt-[var(--space-l)]"
+      >
+        <h2 id="account-data" className="text-[length:var(--text-h3)]">
+          Your data
+        </h2>
+        <div className="mt-[var(--space-s)] flex flex-wrap gap-[var(--space-l)]">
+          <a
+            href="/account/saved-work"
+            className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4"
+          >
+            Download saved work
+          </a>
+          <Link
+            href="/account/close"
+            className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4"
+          >
+            Close your account
+          </Link>
+        </div>
       </section>
 
       {/* Help and support — the approved support copy (Website Master §10). */}

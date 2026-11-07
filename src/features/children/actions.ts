@@ -16,6 +16,7 @@ import {
   revealChildAccessCode,
 } from "@/features/child-auth/issue-code";
 import { safeNextOrNull } from "@/lib/safe-next";
+import { deleteChildProfile } from "@/features/privacy/closure";
 import { logError } from "@/lib/observability/logger";
 
 /**
@@ -209,27 +210,39 @@ export async function updateChildAction(
 }
 
 /**
- * Removing a child profile deletes their mission progress, responses and
- * evidence by cascade. The confirmation dialog says so in plain words — this
- * is not recoverable, and mission_evidence is the child's Mission Trail.
+ * Removing a child profile deletes their entitlements, mission progress,
+ * responses, Mission Trail and its files, Board contributions, and their code
+ * and sessions (D-148). The parent account and every sibling are untouched:
+ * the database re-asserts that this child is this parent's, and acts on this
+ * child's rows and this child's storage folder only.
+ *
+ * It goes through the recorded deletion process, so stored files are removed
+ * through the Storage API rather than orphaned, and a failure part-way is
+ * visible to WLA and retried rather than reported as done.
  */
 export async function deleteChildAction(childId: string) {
-  const { child, supabase } = await requireOwnedChild(childId);
+  const { user } = await requireParent();
+  const { child } = await requireOwnedChild(childId);
 
-  const { error } = await supabase
-    .from("child_profiles")
-    .delete()
-    .eq("id", child.id);
-
-  if (error) logError("delete_child_failed", error, { childId: child.id });
+  let outcome = "removed";
+  try {
+    const result = await deleteChildProfile(user.id, child.id, "parent");
+    if (result.state === "held") outcome = "held";
+    else if (result.state === "pending") outcome = "pending";
+    else if (result.state === "refused") outcome = "failed";
+  } catch (error) {
+    logError("delete_child_failed", error, { childId: child.id });
+    outcome = "failed";
+  }
 
   // If the removed child was selected, clear it so no screen resolves to a
   // profile that no longer exists.
-  if ((await getActiveChildId()) === child.id) {
+  if (outcome !== "failed" && (await getActiveChildId()) === child.id) {
     await clearActiveChild();
   }
 
   revalidatePath("/account/children");
+  revalidatePath("/account");
   revalidatePath("/academy", "layout");
-  redirect("/account/children");
+  redirect(`/account/children?removal=${outcome}`);
 }

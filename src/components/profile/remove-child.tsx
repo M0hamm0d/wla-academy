@@ -7,8 +7,9 @@ import { deleteChildAction } from "@/features/children/actions";
 import { cn } from "@/lib/utils";
 
 /**
- * Removing a child profile is destructive and cascades to their progress,
- * responses and Mission Trail evidence.
+ * Removing a child profile is destructive: their progress, responses, Mission
+ * Trail and its files, Board contributions and code all go (D-148). The family
+ * can download the child's saved work first.
  *
  * UI/UX §52 permits modals for confirmation. The copy names exactly what is
  * lost rather than asking a vague "are you sure?" — Mission Trail is the
@@ -52,9 +53,19 @@ export function RemoveChild({
             Remove {displayName}&rsquo;s profile?
           </Dialog.Title>
           <Dialog.Description className="mt-[var(--space-m)] text-[var(--color-text-muted)]">
-            This also removes their mission progress, their saved responses and
-            their Mission Trail evidence. This cannot be undone.
+            This also removes their missions, their mission progress, their saved
+            responses, their Mission Trail and any files in it, anything they shared on
+            the Mission Board, and their access code. Your account and other profiles
+            aren&rsquo;t affected. This cannot be undone.
           </Dialog.Description>
+          <p className="mt-[var(--space-s)] text-[length:var(--text-small)]">
+            <a
+              href={`/account/saved-work?child=${childId}`}
+              className="inline-flex min-h-[var(--target-min)] items-center underline underline-offset-4"
+            >
+              Download {displayName}&rsquo;s saved work first
+            </a>
+          </p>
 
           <div className="mt-[var(--space-l)] flex flex-wrap gap-[var(--space-m)]">
             <Button

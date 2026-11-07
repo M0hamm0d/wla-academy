@@ -1,228 +1,118 @@
 import "server-only";
 
-import { sendGiftCodeEmail, sendGiftEmail } from "@/lib/email/send";
+import { keysFromEnv, sealCode } from "@/features/child-auth/code-crypto";
+import { sendGiftPurchaseEmail } from "@/lib/email/send";
 import { logError, logWarn } from "@/lib/observability/logger";
 import type { createAdminClient } from "@/lib/supabase/admin";
-import { hashGiftToken, newGiftToken } from "./token";
+import { formatGiftCode } from "./schemas";
 
 type Admin = ReturnType<typeof createAdminClient>;
 
-/** How often a recipient can ask for the link again, per gift. */
-export const LINK_RESEND_INTERVAL_MS = 10 * 60 * 1000;
-
-export type GiftForFulfilment = {
-  id: string;
-  mission_id: string;
-  recipient_email: string;
-  amount_minor: number;
-  currency: string;
-  status: "pending" | "paid" | "redeemed";
-  link_sent_at: string | null;
-};
-
-function redeemUrl(token: string): string | null {
-  const origin = process.env.NEXT_PUBLIC_SITE_URL;
-  if (!origin) return null;
-  return `${origin.replace(/\/$/, "")}/redeem?token=${encodeURIComponent(token)}`;
-}
-
-async function missionTitle(admin: Admin, missionId: string): Promise<string | null> {
-  const { data } = await admin.from("missions").select("title").eq("id", missionId).maybeSingle();
-  return data?.title ?? null;
-}
-
 /**
- * The verified webhook confirmed payment: make the gift redeemable and email
- * the link.
+ * The verified webhook confirmed payment for a gift (D-149).
  *
- * The status change is conditional on `pending`, so a repeated or concurrent
- * delivery activates nothing new and sends nothing new. Throws only when the
- * database could not be written, so the webhook answers 500 and Stripe retries.
+ * The database makes the gift redeemable and gives it a code, conditional on
+ * `pending` under a row lock, so a repeated or concurrent delivery activates
+ * nothing and makes no second code. This returns the code only to the delivery
+ * that activated it; the server then keeps the purchaser's encrypted copy and
+ * emails them their confirmation with the code.
  *
- * A gift already paid whose email never left (the send failed, or the process
- * died after the update) gets a fresh token and another attempt: the old token
- * was never delivered to anyone, so nothing valid is taken away.
- *
- * The email is the only way a recipient learns of the gift, so a send that might
- * work next time also throws, and Stripe's retries become the email's retries. A
- * send that can't work on a retry (email not configured) is logged instead:
- * failing the webhook wouldn't help, and the gift is still paid.
+ * Throws only when the database could not be written, so the webhook answers
+ * 500 and Stripe retries. Nothing after activation can lose the gift: if the
+ * copy can't be stored (no key) or the email doesn't leave, the purchaser can
+ * still get a new code from their account, which replaces this one.
  */
 export async function fulfilPaidGift(
   admin: Admin,
-  gift: GiftForFulfilment,
+  sessionId: string,
   paymentIntentId: string | null,
-): Promise<void> {
-  if (gift.status === "redeemed") return;
-  if (gift.status === "paid" && gift.link_sent_at) return;
-
-  const { token, hash } = newGiftToken();
-
-  if (gift.status === "pending") {
-    const { data, error } = await admin
-      .from("mission_gifts")
-      .update({
-        status: "paid",
-        redeem_token_hash: hash,
-        paid_at: new Date().toISOString(),
-        stripe_payment_intent_id: paymentIntentId,
-      })
-      .eq("id", gift.id)
-      .eq("status", "pending")
-      .select("id");
-    if (error) throw error;
-    // Another delivery got there first, and it sends the email.
-    if (!data || data.length === 0) return;
-  } else {
-    const { data, error } = await admin
-      .from("mission_gifts")
-      .update({ redeem_token_hash: hash, confirm_failures: 0 })
-      .eq("id", gift.id)
-      .eq("status", "paid")
-      .is("link_sent_at", null)
-      .select("id");
-    if (error) throw error;
-    if (!data || data.length === 0) return;
+): Promise<"activated" | "already" | "not_found"> {
+  const { data, error } = await admin.rpc("activate_paid_gift", {
+    p_session_id: sessionId,
+    p_payment_intent: paymentIntentId,
+  });
+  if (error) throw error;
+  const row = data?.[0];
+  if (!row || row.outcome !== "activated" || !row.gift_id || !row.code) {
+    return row?.outcome === "already" ? "already" : "not_found";
   }
 
-  const delivery = await deliverLink(admin, gift, token);
-  if (!delivery.sent && isWorthRetrying(delivery.reason)) {
-    throw new Error("gift_email_retry");
-  }
+  await keepPurchaserCopy(admin, row.gift_id, row.code);
+  await confirmToPurchaser(admin, row.gift_id, row.code);
+  return "activated";
 }
 
-function isWorthRetrying(reason: string): boolean {
-  return reason === "exception" || reason === "http_429" || /^http_5/.test(reason);
-}
-
-/** Send the email and record it. Never throws; the caller decides what a failure means. */
-async function deliverLink(
-  admin: Admin,
-  gift: Pick<GiftForFulfilment, "id" | "mission_id" | "recipient_email">,
-  token: string,
-): Promise<{ sent: true } | { sent: false; reason: string }> {
+/**
+ * Store the purchaser's encrypted copy of a code (D-143's method, bound to the
+ * gift). Never throws: without a key the code can't be shown again, and the
+ * purchaser is offered a new one instead.
+ */
+export async function keepPurchaserCopy(admin: Admin, giftId: string, code: string): Promise<boolean> {
   try {
-    const url = redeemUrl(token);
-    const title = await missionTitle(admin, gift.mission_id);
-    if (!url || !title) {
-      logError("gift_email_not_composed", new Error("no site URL or mission"), { giftId: gift.id });
-      return { sent: false, reason: "not_composed" };
+    const keys = keysFromEnv();
+    if (!keys.current) {
+      logWarn("gift_code_copy_not_kept", { giftId, reason: "no_key" });
+      return false;
     }
-    const { sent, reason } = await sendGiftEmail({
-      to: gift.recipient_email,
-      missionTitle: title,
-      redeemUrl: url,
+    const sealed = sealCode(code, { giftId }, keys);
+    const { data, error } = await admin.rpc("store_gift_code_copy", {
+      p_gift_id: giftId,
+      p_code: code,
+      p_ciphertext: sealed,
     });
-    if (!sent) {
-      logWarn("gift_email_not_sent", { giftId: gift.id, reason: reason ?? "unknown" });
-      return { sent: false, reason: reason ?? "unknown" };
+    if (error || !data) {
+      logWarn("gift_code_copy_not_kept", { giftId, reason: error ? "db" : "superseded" });
+      return false;
+    }
+    return true;
+  } catch {
+    // Never the error itself: it could quote the key's shape.
+    logWarn("gift_code_copy_not_kept", { giftId, reason: "seal_failed" });
+    return false;
+  }
+}
+
+/**
+ * The order confirmation, on a durable medium (D-152): what was bought, for
+ * how much, both checkout statements as agreed, and the gift code. Sent to the
+ * PURCHASER only. Recorded on success so a failure is visible.
+ */
+async function confirmToPurchaser(admin: Admin, giftId: string, code: string): Promise<void> {
+  try {
+    const { data: gift } = await admin
+      .from("mission_gifts")
+      .select("id, mission_id, purchaser_id, amount_minor, currency, paid_at, consent_wording, early_supply_consent_at")
+      .eq("id", giftId)
+      .maybeSingle();
+    if (!gift?.purchaser_id) return;
+    const [{ data: buyer }, { data: mission }] = await Promise.all([
+      admin.from("profiles").select("email").eq("id", gift.purchaser_id).maybeSingle(),
+      admin.from("missions").select("title").eq("id", gift.mission_id).maybeSingle(),
+    ]);
+    if (!buyer?.email || !mission) {
+      logWarn("gift_confirmation_not_composed", { giftId });
+      return;
+    }
+    const sent = await sendGiftPurchaseEmail({
+      to: buyer.email,
+      missionTitle: mission.title,
+      code: formatGiftCode(code),
+      amountMinor: gift.amount_minor,
+      currency: gift.currency,
+      paidAt: gift.paid_at ?? new Date().toISOString(),
+      consentWording: gift.consent_wording,
+      consentRecorded: Boolean(gift.early_supply_consent_at),
+    });
+    if (!sent.sent) {
+      logWarn("gift_confirmation_not_sent", { giftId, reason: sent.reason ?? "unknown" });
+      return;
     }
     const { error } = await admin
       .from("mission_gifts")
-      .update({ link_sent_at: new Date().toISOString() })
-      .eq("id", gift.id);
-    if (error) logError("gift_link_sent_unrecorded", error, { giftId: gift.id });
-    return { sent: true };
+      .update({ confirmation_sent_at: new Date().toISOString() })
+      .eq("id", giftId);
+    if (error) logError("gift_confirmation_unrecorded", error, { giftId });
   } catch (error) {
-    logError("gift_email_failed", error, { giftId: gift.id });
-    return { sent: false, reason: "exception" };
-  }
-}
-
-/**
- * "Redeem a Gift" from the website: nobody holds a link, only an address.
- *
- * Possessing an address proves nothing, so this reveals nothing: it never says
- * whether a gift exists and just emails a link to that address, which is the
- * proof of ownership. Throttled per gift, because each send replaces the token
- * and anyone can type anyone's address. The throttle is taken with a
- * compare-and-swap on what was read, so simultaneous requests can't all pass it.
- * The token is only replaced once the email has actually gone, so a failed send
- * never invalidates a working link.
- */
-export async function emailLinksFor(admin: Admin, email: string): Promise<void> {
-  const { data: gifts, error } = await admin
-    .from("mission_gifts")
-    .select("id, mission_id, recipient_email, link_sent_at")
-    .eq("recipient_email", email)
-    .eq("status", "paid")
-    .limit(10);
-  if (error) {
-    logError("gift_link_lookup_failed", error);
-    return;
-  }
-
-  const cutoff = Date.now() - LINK_RESEND_INTERVAL_MS;
-  for (const gift of gifts ?? []) {
-    if (gift.link_sent_at && new Date(gift.link_sent_at).getTime() > cutoff) continue;
-
-    const reserve = admin
-      .from("mission_gifts")
-      .update({ link_sent_at: new Date().toISOString() })
-      .eq("id", gift.id)
-      .eq("status", "paid");
-    const { data: reserved, error: reserveError } = await (gift.link_sent_at
-      ? reserve.eq("link_sent_at", gift.link_sent_at)
-      : reserve.is("link_sent_at", null)
-    ).select("id");
-    if (reserveError) {
-      logError("gift_link_reserve_failed", reserveError, { giftId: gift.id });
-      continue;
-    }
-    if (!reserved || reserved.length === 0) continue;
-
-    const { token } = newGiftToken();
-    const delivery = await deliverLink(admin, gift, token);
-    if (!delivery.sent) {
-      const { error: restoreError } = await admin
-        .from("mission_gifts")
-        .update({ link_sent_at: gift.link_sent_at })
-        .eq("id", gift.id);
-      if (restoreError) logError("gift_link_restore_failed", restoreError, { giftId: gift.id });
-      continue;
-    }
-    const { error: rotateError } = await admin
-      .from("mission_gifts")
-      .update({ redeem_token_hash: hashGiftToken(token), confirm_failures: 0 })
-      .eq("id", gift.id)
-      .eq("status", "paid");
-    if (rotateError) logError("gift_token_rotate_failed", rotateError, { giftId: gift.id });
-  }
-}
-
-/**
- * "Redeem a Gift" from the website: email a code to that address if a gift waits
- * for it (D-145). The database chooses the oldest paid gift, applies the
- * two-minute limit, and makes the code. No row means nothing to send, and the
- * visitor has already had the same answer either way.
- *
- * A send that fails withdraws the code and gives the limit back, so asking again
- * can work straight away. Never throws: this runs after the response.
- */
-export async function emailCodeFor(admin: Admin, email: string): Promise<void> {
-  try {
-    const { data, error } = await admin.rpc("issue_gift_code", { p_email: email });
-    if (error) {
-      logError("gift_code_issue_failed", error);
-      return;
-    }
-    const issued = data?.[0];
-    if (!issued) return;
-
-    const title = await missionTitle(admin, issued.mission_id);
-    const delivery = title
-      ? await sendGiftCodeEmail({ to: email, missionTitle: title, code: issued.code })
-      : { sent: false, reason: "not_composed" };
-
-    if (!delivery.sent) {
-      logWarn("gift_code_not_sent", { giftId: issued.gift_id, reason: delivery.reason ?? "unknown" });
-      const { error: withdrawError } = await admin.rpc("withdraw_gift_code", {
-        p_gift_id: issued.gift_id,
-        p_code: issued.code,
-      });
-      if (withdrawError) logError("gift_code_withdraw_failed", withdrawError, { giftId: issued.gift_id });
-    }
-  } catch (error) {
-    logError("gift_code_failed", error);
+    logError("gift_confirmation_failed", error, { giftId });
   }
 }

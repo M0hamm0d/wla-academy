@@ -6,6 +6,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { requireOwnedChild, requireParent } from "@/lib/permissions";
 import { logError } from "@/lib/observability/logger";
 import type { ChildProfileRow, MissionRow } from "@/types/database";
+import { CONSENT_REQUIRED_MESSAGE, type CheckoutConsent } from "./consent";
 
 /**
  * STRIPE CHECKOUT — Sprint 8.
@@ -27,7 +28,11 @@ export class CheckoutError extends Error {
   constructor(
     message: string,
     readonly reason:
-      "not_purchasable" | "already_owned" | "free_mission" | "provider",
+      | "not_purchasable"
+      | "already_owned"
+      | "free_mission"
+      | "provider"
+      | "consent_required",
   ) {
     super(message);
     this.name = "CheckoutError";
@@ -64,10 +69,13 @@ export async function acquireMission({
   childId,
   missionSlug,
   origin,
+  consent,
 }: {
   childId: string;
   missionSlug: string;
   origin: string;
+  /** Both checkout boxes (D-152). Needed for a paid mission only. */
+  consent: CheckoutConsent | null;
 }): Promise<
   | { kind: "granted"; childId: string }
   | { kind: "owned"; childId: string }
@@ -115,10 +123,16 @@ export async function acquireMission({
     return { kind: "processing", childId: child.id };
   }
 
+  // Checked here, by the server, before Stripe: the page's checkboxes are a
+  // convenience, this is the requirement.
+  if (!consent) {
+    throw new CheckoutError(CONSENT_REQUIRED_MESSAGE, "consent_required");
+  }
+
   return {
     kind: "checkout",
     childId: child.id,
-    url: (await createCheckoutSession({ child, mission, user, origin })).url,
+    url: (await createCheckoutSession({ child, mission, user, origin, consent })).url,
   };
 }
 
@@ -238,11 +252,13 @@ async function createCheckoutSession({
   mission,
   user,
   origin,
+  consent,
 }: {
   child: ChildProfileRow;
   mission: MissionRow;
   user: { id: string; email?: string };
   origin: string;
+  consent: CheckoutConsent;
 }): Promise<{ url: string }> {
   // A free mission must never reach Stripe. Unreachable via acquireMission,
   // asserted here so a future caller cannot bypass the decision.
@@ -319,6 +335,10 @@ async function createCheckoutSession({
     mission_id: mission.id,
     amount_minor: mission.price_minor,
     currency: mission.currency,
+    // What the parent agreed to, recorded with the order (D-152).
+    early_supply_consent_at: consent.earlySupplyConsentAt,
+    cancellation_ack_at: consent.cancellationAckAt,
+    consent_wording: consent.wording,
   });
 
   /*

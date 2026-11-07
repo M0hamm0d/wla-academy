@@ -80,3 +80,6 @@ export const IconImport = (p: IconProps) => (
 export const IconTag = (p: IconProps) => (
   <Svg {...p}><path d="M3.5 12.2V4.5a1 1 0 0 1 1-1h7.7l8.3 8.3a1 1 0 0 1 0 1.4l-6.9 6.9a1 1 0 0 1-1.4 0Z" /><circle cx="8" cy="8" r="1.4" /></Svg>
 );
+export const IconPrivacy = (p: IconProps) => (
+  <Svg {...p}><path d="M12 3.5 5 6.5v5c0 4.2 3 7.6 7 9 4-1.4 7-4.8 7-9v-5l-7-3Z" /><path d="M9.5 12l1.8 1.8 3.4-3.6" /></Svg>
+);

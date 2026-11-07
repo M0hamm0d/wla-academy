@@ -276,3 +276,32 @@ Each of these extends an existing table, answering "can an existing table carry 
 
 `app_secrets` gains the row `gift_code_pepper`.
 
+
+### Privacy and gifting, 6 November 2026 (D-148 to D-152)
+
+Five new tables, each answering the four questions above:
+
+| Table | 1. Requirement | 2. Must? | 3. Could an existing table carry it? | 4. New child data? |
+|---|---|---|---|---|
+| `privacy_deletions` | Verified closure within 30 days, failures visible, deletions re-applied after a restore (client document of 6 Nov 2026, §1; resolves OPEN-14) | Must: a legal requirement for children's data, not deferred by §22 | No: it must outlive the account and children it records | No: ids and dates only, kept for the restore safeguard |
+| `privacy_deletion_files` | The same: no stored file forgotten once its rows are gone | Must | No: the rows that point at files are what is being deleted | A file path, until the file is removed; then the row goes |
+| `retention_holds` | "Lawful exceptions", investigation exceptions, annual review of case-specific records (§1) | Must | No: a hold covers subjects across tables | No: a reason written by WLA, with no child's details |
+| `retention_runs` | Evidence that the retention rules ran (§9, "operational evidence") | Must | No | No: counts only |
+| `gift_code_attempts` | Protection against repeated incorrect gift codes (§5, the brief's security requirements) | Must | `child_auth_attempts` is for child codes and keyed on the code; this is keyed on the client | No: an HMAC of a network address, deleted after 90 days |
+
+
+### The deletion ledger, 7 November 2026 (D-157)
+
+| Table | 1. Requirement | 2. Must? | 3. Could an existing table carry it? | 4. New child data? |
+|---|---|---|---|---|
+| `privacy_ledger_outbox` | "Safeguards against restoring deleted information" (client document of 6 Nov 2026, §1): each privacy event, recorded in the same transaction, until the server has copied it to the ledger outside the database | Must | No: `privacy_deletions` is overwritten as a closure progresses and doesn't record holds or Board removals as events | No: ids and dates only; pruned 30 days after copying |
+| `privacy_ledger_head` | The same: how far the external ledger had reached, so a restore can tell a cut-short or foreign ledger from the right one | Must | No | No: a sequence number and a hash |
+
+Columns added to existing tables:
+
+| Migration | Table | Columns | Why |
+|---|---|---|---|
+| `20261106120500` | `mission_gifts` | dropped `recipient_email`, `redeem_token_hash`, `link_sent_at`, `confirm_failures`, `code_hash`, `code_expires_at`, `code_failures`, `code_sent_at`; added `code_lookup`, `code_ciphertext`, `code_issued_at` | The purchaser holds the code; no recipient data (D-149). Less personal data than before. |
+| `20261106130000` | `checkout_intents` | `paid_at`, `stripe_payment_intent_id`, `early_supply_consent_at`, `cancellation_ack_at`, `consent_wording`, `confirmation_sent_at`; `parent_id` and `child_id` now nullable, set null on delete | Consent and confirmation records (D-152). A paid order kept as a financial record without the family (D-148). |
+| `20261106130000` | `mission_gifts` | the same four consent and confirmation columns | D-152 |
+| `20261106150000` | `board_contributions` | `rejected_reason`, `anonymity_checked_at`, `anonymity_checked_by` | Anonymity confirmed before publishing, and kept private otherwise (D-151) |

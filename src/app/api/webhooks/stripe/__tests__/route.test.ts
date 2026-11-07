@@ -56,10 +56,20 @@ vi.mock("@/features/commerce/checkout", () => ({
     },
   }),
 }));
-vi.mock("@/lib/email/send", () => ({
-  sendMissionAccessEmail: vi.fn(async () => ({ sent: false, reason: "not_configured" })),
-  sendGiftEmail: vi.fn(async () => ({ sent: true })),
-}));
+vi.mock("@/lib/email/send", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/email/send")>("@/lib/email/send");
+  return {
+    isWorthRetrying: actual.isWorthRetrying,
+    sendMissionAccessEmail: vi.fn(async () => ({ sent: true })),
+  };
+});
+/*
+ * Gift activation is the database's (activate_paid_gift) and is executed in
+ * scripts/gift-regression.sql and the gift flow tests. Here: that the route
+ * hands it the verified session, and what it answers when that fails.
+ */
+const fulfil = vi.hoisted(() => ({ fn: vi.fn() }));
+vi.mock("@/features/gifts/fulfil", () => ({ fulfilPaidGift: fulfil.fn }));
 vi.mock("@/lib/observability/logger", () => ({
   logError: vi.fn(() => "ref"),
   logWarn: vi.fn(),
@@ -105,6 +115,11 @@ vi.mock("@/lib/supabase/admin", () => ({
       };
       // `await admin.from("stripe_events").delete().eq(...)` — the release.
       q.then = (resolve: (v: unknown) => void) => {
+        if (patch && table === "checkout_intents") {
+          const rows = [...db.intents.values()].filter((r) => Object.entries(filters).every(([k, v]) => r[k] === v));
+          rows.forEach((r) => Object.assign(r, patch));
+          return resolve({ data: rows, error: null });
+        }
         if (patch && table === "mission_gifts") {
           const rows = db.gifts.filter((g) => Object.entries(filters).every(([k, v]) => g[k] === v));
           rows.forEach((g) => Object.assign(g, patch));
@@ -158,7 +173,10 @@ const { POST } = await import("../route");
 const { sendMissionAccessEmail } = await import("@/lib/email/send");
 const { logError } = await import("@/lib/observability/logger");
 
-const INTENT = { child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP" };
+const INTENT = {
+  id: "intent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP",
+  paid_at: null, confirmation_sent_at: null, consent_wording: "2026-11-06 | a | b", early_supply_consent_at: "2026-11-06T10:00:00Z",
+};
 
 function deliver({
   id = "evt_1",
@@ -191,7 +209,7 @@ function deliver({
 
 beforeEach(() => {
   db.ledger = new Set();
-  db.intents = new Map([["cs_1", INTENT]]);
+  db.intents = new Map([["cs_1", { ...INTENT }]]);
   db.entitlements = [];
   db.gifts = [];
   db.giftError = null;
@@ -200,7 +218,8 @@ beforeEach(() => {
   db.intentError = null;
   db.entitlementError = null;
   db.releases = [];
-  vi.mocked(sendMissionAccessEmail).mockClear();
+  vi.mocked(sendMissionAccessEmail).mockClear().mockResolvedValue({ sent: true });
+  fulfil.fn.mockReset().mockResolvedValue("activated");
   vi.mocked(logError).mockClear();
 });
 
@@ -420,72 +439,93 @@ describe("only a verified, paid, matching payment grants access", () => {
   });
 });
 
-describe("a gift (D-140)", () => {
-  const GIFT = {
-    id: "gift-1", mission_id: "mission-1", recipient_email: "r@example.test", stripe_session_id: "cs_1",
-    amount_minor: 1200, currency: "GBP", status: "pending", link_sent_at: null,
-  };
+describe("the payment record and the order confirmation (D-148, D-152)", () => {
+  it("a paid purchase is stamped on the order, so it outlives the family's account", async () => {
+    await deliver();
+    expect(db.intents.get("cs_1")).toMatchObject({ stripe_payment_intent_id: "pi_1" });
+    expect(db.intents.get("cs_1")?.paid_at).toBeTruthy();
+  });
+
+  it("the confirmation carries the order and what was agreed, and is recorded once sent", async () => {
+    await deliver();
+    expect(sendMissionAccessEmail).toHaveBeenCalledWith(expect.objectContaining({
+      to: "parent@example.test", amountMinor: 1200, currency: "GBP",
+      consentWording: "2026-11-06 | a | b", consentRecorded: true,
+    }));
+    expect(db.intents.get("cs_1")?.confirmation_sent_at).toBeTruthy();
+  });
+
+  it("a confirmation that might send next time asks Stripe to deliver again, and the retry grants nothing twice", async () => {
+    vi.mocked(sendMissionAccessEmail).mockResolvedValueOnce({ sent: false, reason: "http_503" });
+    const first = await deliver();
+    expect(first.status).toBe(500);
+    expect(db.releases).toEqual(["evt_1"]);
+    expect(db.entitlements).toHaveLength(1);
+    const again = await deliver();
+    expect(again.status).toBe(200);
+    expect(db.entitlements).toHaveLength(1);
+    expect(sendMissionAccessEmail).toHaveBeenCalledTimes(2);
+    expect(db.intents.get("cs_1")?.confirmation_sent_at).toBeTruthy();
+  });
+
+  it("email not being configured doesn't make Stripe retry for days, and stays visibly unsent", async () => {
+    vi.mocked(sendMissionAccessEmail).mockResolvedValue({ sent: false, reason: "not_configured" });
+    const res = await deliver();
+    expect(res.status).toBe(200);
+    expect(db.entitlements).toHaveLength(1);
+    expect(db.intents.get("cs_1")?.confirmation_sent_at).toBeNull();
+  });
+
+  it("a payment for an account closed meanwhile grants nothing and is flagged", async () => {
+    db.intents.set("cs_1", { ...INTENT, child_id: null });
+    const res = await deliver();
+    expect(await res.json()).toMatchObject({ closed: true });
+    expect(db.entitlements).toEqual([]);
+    expect(logError).toHaveBeenCalledWith("stripe_paid_for_closed_account", expect.anything(), { sessionId: "cs_1" });
+  });
+});
+
+describe("a gift (D-149)", () => {
+  const GIFT = { id: "gift-1", stripe_session_id: "cs_1", amount_minor: 1200, currency: "GBP" };
   beforeEach(() => {
-    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://academy.test");
     db.intents.clear();
     db.gifts = [{ ...GIFT }];
   });
 
-  it("payment activates the gift, grants nobody anything, and sends one email", async () => {
-    const { sendGiftEmail } = await import("@/lib/email/send");
-    vi.mocked(sendGiftEmail).mockClear();
+  it("payment activates the gift through the database with the verified session, and grants nobody anything", async () => {
     const res = await deliver({ session: { amount_total: 1200, currency: "gbp" } });
     expect(res.status).toBe(200);
-    expect(db.gifts[0].status).toBe("paid");
+    expect(fulfil.fn).toHaveBeenCalledWith(expect.anything(), "cs_1", "pi_1");
     expect(db.entitlements).toEqual([]);
-    expect(sendGiftEmail).toHaveBeenCalledTimes(1);
+    expect(sendMissionAccessEmail).not.toHaveBeenCalled();
   });
 
-  it("a repeated event creates no second gift and no second email", async () => {
-    const { sendGiftEmail } = await import("@/lib/email/send");
-    vi.mocked(sendGiftEmail).mockClear();
+  it("a repeated event is handed on again, and the database activates nothing twice", async () => {
     const session = { amount_total: 1200, currency: "gbp" };
     await deliver({ session });
-    const hash = db.gifts[0].redeem_token_hash;
+    fulfil.fn.mockResolvedValue("already");
     const res = await deliver({ session });
     expect(await res.json()).toMatchObject({ duplicate: true });
-    expect(db.gifts).toHaveLength(1);
-    expect(db.gifts[0].redeem_token_hash).toBe(hash);
-    expect(sendGiftEmail).toHaveBeenCalledTimes(1);
+    expect(fulfil.fn).toHaveBeenCalledTimes(2);
   });
 
   it("an unpaid session activates nothing", async () => {
     const res = await deliver({ session: { payment_status: "unpaid", amount_total: 1200, currency: "gbp" } });
     expect(await res.json()).toMatchObject({ unpaid: true });
-    expect(db.gifts[0].status).toBe("pending");
-    expect(db.gifts[0].redeem_token_hash).toBeUndefined();
+    expect(fulfil.fn).not.toHaveBeenCalled();
   });
 
   it("an amount that doesn't match what was recorded activates nothing", async () => {
     const res = await deliver({ session: { amount_total: 1, currency: "gbp" } });
     expect(await res.json()).toMatchObject({ mismatch: true });
-    expect(db.gifts[0].status).toBe("pending");
+    expect(fulfil.fn).not.toHaveBeenCalled();
   });
 
-  it("an email that might work next time is retried: the recipient has no other way to hear", async () => {
-    const { sendGiftEmail } = await import("@/lib/email/send");
-    vi.mocked(sendGiftEmail).mockClear();
-    vi.mocked(sendGiftEmail).mockResolvedValueOnce({ sent: false, reason: "http_503" });
+  it("a database failure while activating is retried, with the claim released", async () => {
+    fulfil.fn.mockRejectedValueOnce(new Error("down"));
     const res = await deliver({ session: { amount_total: 1200, currency: "gbp" } });
     expect(res.status).toBe(500);
-    expect(db.releases.length).toBe(1);
-    expect(db.gifts[0].status).toBe("paid");
-    const again = await deliver({ session: { amount_total: 1200, currency: "gbp" } });
-    expect(again.status).toBe(200);
-    expect(sendGiftEmail).toHaveBeenCalledTimes(2);
-  });
-
-  it("email not being configured doesn't make Stripe retry for days", async () => {
-    const { sendGiftEmail } = await import("@/lib/email/send");
-    vi.mocked(sendGiftEmail).mockResolvedValueOnce({ sent: false, reason: "not_configured" });
-    const res = await deliver({ session: { amount_total: 1200, currency: "gbp" } });
-    expect(res.status).toBe(200);
-    expect(db.gifts[0].status).toBe("paid");
+    expect(db.releases).toEqual(["evt_1"]);
   });
 
   it("a failed gift lookup is retried rather than dropped", async () => {

@@ -6,6 +6,7 @@ import { FormError } from "@/components/ui/field";
 import { acquireMissionAction } from "@/features/commerce/actions";
 import { emptyFormState } from "@/features/auth/schemas";
 import { ChildPicker } from "./child-picker";
+import { ConsentFields } from "./consent-fields";
 import type { ChildProfileRow } from "@/types/database";
 
 /**
@@ -52,6 +53,7 @@ export function PurchaseForm({
         <form action={formAction} className="flex flex-col gap-[var(--space-l)]">
           <FormError message={state.error} />
           <input type="hidden" name="childId" value={childId} />
+          {!isFree && <ConsentFields error={state.fieldErrors?.consent} />}
       <Button
         type="submit"
         size="large"

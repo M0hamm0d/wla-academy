@@ -473,8 +473,12 @@ describe("11. Destructive child deletion", () => {
       src.indexOf("export async function deleteChildAction"),
     );
     expect(fn).toContain("requireOwnedChild(childId)");
-    expect(fn).toContain('.eq("id", child.id)');
+    // Through the recorded deletion process (D-148), for the VERIFIED child
+    // only: the id the database receives is the one requireOwnedChild returned.
+    expect(fn).toContain('deleteChildProfile(user.id, child.id, "parent")');
     expect(fn).toContain("clearActiveChild()");
+    // Behaviour, sibling isolation and file removal are executed against the
+    // real schema by scripts/privacy-regression.sql.
   });
 
   it("requires explicit confirmation — no one-click delete", () => {

@@ -14,9 +14,15 @@ import { boundedFetch } from "./fetch";
  * Legitimate uses are narrow:
  *   - the Stripe webhook creating an entitlement for a not-yet-signed-in user
  *   - granting a FREE mission, which has no session to act on either
- *   - gift purchase and redemption (D-140): recording a gift before Checkout,
- *     activating it from the verified webhook, emailing its link, and turning a
- *     token-and-address-confirmed claim into a child's entitlement
+ *   - gift purchase and redemption (D-140, D-149): recording a gift before
+ *     Checkout, activating it from the verified webhook, keeping and opening the
+ *     purchaser's encrypted copy of its code (after requireParent; the purchaser
+ *     is re-asserted in the database), and turning a code-confirmed claim into
+ *     a child's entitlement
+ *   - account closure and child-profile deletion (D-148): removing the family's
+ *     stored files through the Storage API and deleting the auth user, after
+ *     the parent was verified (password re-entered) or WLA verified an erasure
+ *     request; the database records each step and re-asserts ownership
  *   - signing a Mission Kit file a child session was authorised for (D-64)
  *   - storing and reading the encrypted copy of a child's code (D-143), after
  *     requireOwnedChild; both functions re-assert the parent themselves

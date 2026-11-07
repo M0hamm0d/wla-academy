@@ -1,11 +1,10 @@
 /**
  * A confirmed claim on a gift, httpOnly and SameSite=Lax: a secret issued only
- * after the address was confirmed, never the link's token (D-142). So a link
- * alone can't produce one.
+ * after a correct gift code was entered (D-142, D-149), never the code itself.
  *
  * Path "/", not "/redeem". Next renders a server action's redirect target inside
  * the action's own request, so after signing in (a request to /login) a cookie
- * scoped to /redeem isn't sent, and the page would ask for the address again.
+ * scoped to /redeem isn't sent, and the page would ask for the code again.
  * Holding it redeems nothing by itself: it needs a signed-in parent and their
  * own child.
  */

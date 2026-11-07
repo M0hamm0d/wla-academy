@@ -5,27 +5,28 @@ import { CheckoutError, missionLineItem, stripe } from "@/features/commerce/chec
 import { logError } from "@/lib/observability/logger";
 import { requireParent } from "@/lib/permissions";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { normaliseGiftEmail } from "./token";
+import { CONSENT_REQUIRED_MESSAGE, type CheckoutConsent } from "@/features/commerce/consent";
 
 /**
  * Pay for a mission as a gift (D-140).
  *
  * Same Stripe account, same Checkout, same webhook as an ordinary purchase. The
  * differences are that no child is involved and nothing is granted: the webhook
- * turns the pending record into a redeemable gift, and the purchaser gets no
- * entitlement from it.
+ * turns the pending record into a redeemable gift with a code, which the
+ * purchaser receives and passes on (D-149). WLA asks for no recipient address.
  *
- * As with a purchase, the browser supplies a mission and an address and nothing
- * else: whether it can be bought, and for how much, is read here.
+ * As with a purchase, the browser supplies a mission and the two checkout
+ * statements and nothing else: whether it can be bought, and for how much, is
+ * read here.
  */
 export async function purchaseGift({
   missionSlug,
-  recipientEmail,
   origin,
+  consent,
 }: {
   missionSlug: string;
-  recipientEmail: string;
   origin: string;
+  consent: CheckoutConsent | null;
 }): Promise<{ kind: "checkout"; url: string } | { kind: "processing" }> {
   const { user, supabase } = await requireParent();
 
@@ -51,7 +52,10 @@ export async function purchaseGift({
     );
   }
 
-  const email = normaliseGiftEmail(recipientEmail);
+  if (!consent) {
+    throw new CheckoutError(CONSENT_REQUIRED_MESSAGE, "consent_required");
+  }
+
   const admin = createAdminClient();
 
   /*
@@ -66,7 +70,6 @@ export async function purchaseGift({
     .select("stripe_session_id")
     .eq("purchaser_id", user.id)
     .eq("mission_id", mission.id)
-    .eq("recipient_email", email)
     .eq("status", "pending")
     .gte("created_at", since)
     .order("created_at", { ascending: false })
@@ -93,8 +96,7 @@ export async function purchaseGift({
       customer_email: user.email,
       success_url: `${origin}/gift?purchase=success`,
       cancel_url: `${origin}/purchase/${mission.slug}?gift=1&cancelled=1`,
-      // A convenience only; mission_gifts is the authoritative record. Holds
-      // no recipient address: Stripe has no need of it.
+      // A convenience only; mission_gifts is the authoritative record.
       metadata: { gift: "1", mission_id: mission.id, parent_id: user.id },
     });
   } catch (error) {
@@ -114,10 +116,12 @@ export async function purchaseGift({
   const { error: insertError } = await admin.from("mission_gifts").insert({
     mission_id: mission.id,
     purchaser_id: user.id,
-    recipient_email: email,
     stripe_session_id: session.id,
     amount_minor: mission.price_minor,
     currency: mission.currency,
+    early_supply_consent_at: consent.earlySupplyConsentAt,
+    cancellation_ack_at: consent.cancellationAckAt,
+    consent_wording: consent.wording,
   });
 
   // No record means the webhook couldn't honour the payment, so no payment.

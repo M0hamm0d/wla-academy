@@ -4,7 +4,7 @@ import { stripeEnv } from "@/lib/env";
 import { stripe } from "@/features/commerce/checkout";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { fulfilPaidGift } from "@/features/gifts/fulfil";
-import { sendMissionAccessEmail } from "@/lib/email/send";
+import { isWorthRetrying, sendMissionAccessEmail } from "@/lib/email/send";
 import { logError, logWarn } from "@/lib/observability/logger";
 
 /**
@@ -114,7 +114,7 @@ export async function POST(request: Request) {
    */
   const { data: intent, error: intentError } = await admin
     .from("checkout_intents")
-    .select("child_id, mission_id, amount_minor, currency")
+    .select("id, child_id, mission_id, amount_minor, currency, paid_at, confirmation_sent_at, consent_wording, early_supply_consent_at")
     .eq("stripe_session_id", session.id)
     .maybeSingle();
 
@@ -136,7 +136,7 @@ export async function POST(request: Request) {
     // A gift has no child yet, so no intent: it has its own record (D-140).
     const { data: gift, error: giftError } = await admin
       .from("mission_gifts")
-      .select("id, mission_id, recipient_email, amount_minor, currency, status, link_sent_at")
+      .select("id, amount_minor, currency")
       .eq("stripe_session_id", session.id)
       .maybeSingle();
 
@@ -162,7 +162,7 @@ export async function POST(request: Request) {
       try {
         await fulfilPaidGift(
           admin,
-          gift,
+          session.id,
           typeof session.payment_intent === "string" ? session.payment_intent : null,
         );
       } catch (error) {
@@ -201,6 +201,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true, mismatch: true });
   }
 
+  // The family closed their account before the payment arrived: nothing to
+  // grant, and the payment is visible to reconcile (refunds are manual, D-20).
+  if (!intent.child_id) {
+    logError("stripe_paid_for_closed_account", new Error("paid intent has no child"), { sessionId: session.id });
+    return NextResponse.json({ received: true, closed: true });
+  }
+  const childId = intent.child_id;
+
   // Service-role: the purchaser may not have an active session right now.
   // ON CONFLICT DO NOTHING ... RETURNING: `inserted` is empty when the row
   // already existed, so a duplicate or concurrent delivery grants nothing new.
@@ -208,7 +216,7 @@ export async function POST(request: Request) {
     .from("mission_entitlements")
     .upsert(
       {
-        child_id: intent.child_id,
+        child_id: childId,
         mission_id: intent.mission_id,
         source: "purchase",
         status: "active",
@@ -232,18 +240,57 @@ export async function POST(request: Request) {
   }
 
   /*
-   * Confirm access by email (D-27) — only for the delivery that created the
-   * entitlement, so a duplicate never sends a second message.
-   *
-   * Strictly after the entitlement exists, and never able to fail the success
-   * path: sendMissionAccessEmail never throws, and a send failure must not
-   * turn a completed purchase into a 500 that Stripe retries. The
-   * entitlement is the thing that matters; the email is a courtesy.
+   * The payment is a financial record of its own (D-148): stamped on the
+   * intent, so it survives the family closing their account. Conditional, so a
+   * repeat changes nothing.
    */
-  if ((inserted ?? []).length > 0) {
-    await notifyAccessGranted(admin, intent.child_id, intent.mission_id);
-  } else {
-    await flagIfRevoked(admin, intent.child_id, intent.mission_id, session.id);
+  const paymentIntentId = typeof session.payment_intent === "string" ? session.payment_intent : null;
+  const paidAt = intent.paid_at ?? new Date().toISOString();
+  if (!intent.paid_at) {
+    const { error: stampError } = await admin
+      .from("checkout_intents")
+      .update({ paid_at: paidAt, stripe_payment_intent_id: paymentIntentId })
+      .eq("id", intent.id)
+      .is("paid_at", null);
+    if (stampError) {
+      logError("stripe_payment_unrecorded", stampError, { sessionId: session.id });
+      if (!duplicate) await releaseClaim(admin, event);
+      return NextResponse.json({ error: "Record failed" }, { status: 500 });
+    }
+  }
+
+  // A grant that found a row already there: normally active, but a REVOKED
+  // one means a payment for access the family doesn't have (flagged below).
+  const active =
+    (inserted ?? []).length > 0 ||
+    (await flagIfRevoked(admin, childId, intent.mission_id, session.id));
+
+  /*
+   * The order confirmation on a durable medium (D-152): sent once, recorded
+   * when it leaves. It is required, not a courtesy, so a send that might work
+   * next time (provider 5xx or 429, a network error) answers 500 and Stripe's
+   * retries become the email's retries — the entitlement and the payment stamp
+   * above are idempotent, so a retry repeats nothing else. Email not being
+   * configured can't be helped by retrying: logged, and visible in Orders.
+   */
+  if (active && !intent.confirmation_sent_at) {
+    const outcome = await notifyAccessGranted(admin, childId, intent.mission_id, {
+      amountMinor: intent.amount_minor,
+      currency: intent.currency,
+      paidAt,
+      consentWording: intent.consent_wording,
+      consentRecorded: Boolean(intent.early_supply_consent_at),
+    });
+    if (outcome.sent) {
+      const { error: sentError } = await admin
+        .from("checkout_intents")
+        .update({ confirmation_sent_at: new Date().toISOString() })
+        .eq("id", intent.id);
+      if (sentError) logError("stripe_confirmation_unrecorded", sentError, { sessionId: session.id });
+    } else if (isWorthRetrying(outcome.reason)) {
+      if (!duplicate) await releaseClaim(admin, event);
+      return NextResponse.json({ error: "Confirmation not sent" }, { status: 500 });
+    }
   }
 
   return duplicate
@@ -268,7 +315,7 @@ async function releaseClaim(
 
 /**
  * The grant found a row already there. Normally it is active — a duplicate or
- * an earlier grant — and nothing is wrong. If it is REVOKED, the family has
+ * an earlier grant — and nothing is wrong: returns true. If it is REVOKED, the family has
  * paid for access they still do not have. Revocation is only ever undone
  * explicitly (D-20), so this does not reactivate it; it makes the payment
  * visible so someone can reinstate or refund. Never fails the webhook.
@@ -278,7 +325,7 @@ async function flagIfRevoked(
   childId: string,
   missionId: string,
   sessionId: string,
-): Promise<void> {
+): Promise<boolean> {
   const { data: existing, error } = await admin
     .from("mission_entitlements")
     .select("status")
@@ -287,26 +334,38 @@ async function flagIfRevoked(
     .maybeSingle();
   if (error) {
     logWarn("stripe_existing_entitlement_unread", { sessionId });
-  } else if (existing && existing.status !== "active") {
+    // Unknown: the confirmation waits for a delivery that can read it.
+    return false;
+  }
+  if (existing && existing.status !== "active") {
     logError(
       "stripe_paid_entitlement_revoked",
       new Error("paid for a mission whose entitlement is revoked"),
       { sessionId },
     );
+    return false;
   }
+  return Boolean(existing);
 }
 
 /**
  * Look up the details the confirmation email needs and send it.
  *
  * Service-role, because the purchaser has no active session at this moment.
- * Any failure is logged and swallowed — see the call site.
+ * Never throws; returns how the send went, for the caller to decide.
  */
 async function notifyAccessGranted(
   admin: ReturnType<typeof createAdminClient>,
   childId: string,
   missionId: string,
-): Promise<void> {
+  order: {
+    amountMinor: number;
+    currency: string;
+    paidAt: string;
+    consentWording: string | null;
+    consentRecorded: boolean;
+  },
+): Promise<{ sent: boolean; reason?: string }> {
   try {
     const [{ data: child }, { data: mission }] = await Promise.all([
       admin
@@ -321,7 +380,7 @@ async function notifyAccessGranted(
         .maybeSingle(),
     ]);
 
-    if (!child || !mission) return;
+    if (!child || !mission) return { sent: false, reason: "not_composed" };
 
     const { data: parent } = await admin
       .from("profiles")
@@ -329,20 +388,21 @@ async function notifyAccessGranted(
       .eq("id", child.parent_id)
       .maybeSingle();
 
-    if (!parent?.email) return;
+    if (!parent?.email) return { sent: false, reason: "not_composed" };
 
     const origin = process.env.NEXT_PUBLIC_SITE_URL ?? "";
 
-    await sendMissionAccessEmail({
+    return await sendMissionAccessEmail({
       to: parent.email,
       childName: child.display_name,
       missionTitle: mission.title,
       missionUrl: `${origin}/academy/missions/${mission.slug}`,
+      ...order,
     });
   } catch (err) {
-    // The purchase already succeeded; the email is a courtesy.
     logWarn("stripe_access_email_failed", {
       reason: err instanceof Error ? err.message : "unknown",
     });
+    return { sent: false, reason: "exception" };
   }
 }

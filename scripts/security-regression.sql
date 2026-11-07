@@ -682,7 +682,10 @@ set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000002';
 select chk('the parent sees their children''s offers, with the waiting one', (select count(*) = 2 from board_family_contributions()));
 select board_permit(:'bc2', true);
 set request.jwt.claim.sub = 'aaaaaaaa-0000-0000-0000-000000000001';
-select admin_board_moderate(:'bc2', 'publish', 'I started from what the names had in common.', true, 'Started from the evidence');
+-- D-151: publishing needs the moderator's confirmation that nothing identifies a child.
+select chk_raises('publishing without the anonymity confirmation is refused',
+  format($$select admin_board_moderate(%L, 'publish', 'x', null, null)$$, :'bc2'), 'anonymity_not_confirmed');
+select admin_board_moderate(:'bc2', 'publish', 'I started from what the names had in common.', true, 'Started from the evidence', true);
 reset role;
 select chk('published, edited and curated by WLA',
   (select status = 'published' and curated and approach = 'Started from the evidence' and text like 'I started from what%' from board_contributions where id = :'bc2'));
