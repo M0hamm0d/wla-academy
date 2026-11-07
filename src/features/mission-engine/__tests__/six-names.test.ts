@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import {
   applyInteraction,
   emptyMissionState,
@@ -687,7 +687,7 @@ describe("canonical tracker states", () => {
     const definitions = files.filter((f) =>
       /function applyCanonicalTracker\(/.test(readFileSync(f, "utf8")),
     );
-    expect(definitions.map((f) => f.replace(/.*\/src\//, "src/"))).toEqual([
+    expect(definitions.map((f) => relative(repo, f).replaceAll("\\", "/"))).toEqual([
       "src/features/mission-engine/navigation.ts",
     ]);
   });

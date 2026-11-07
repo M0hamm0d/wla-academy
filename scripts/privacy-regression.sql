@@ -66,13 +66,15 @@ select child_id, mission_id, id, 'An approach', case when child_id = 'cc000000-0
        case when child_id = 'cc000000-0000-4000-8000-000000000003' then null else now() end
   from mission_evidence where storage_path is not null and mission_id = 'dd000000-0000-4000-8000-000000000001';
 -- Payments: a paid and an unpaid intent per child of P; a gift P bought.
-insert into checkout_intents (stripe_session_id, parent_id, child_id, mission_id, amount_minor, currency, paid_at, stripe_payment_intent_id, early_supply_consent_at, cancellation_ack_at, consent_wording)
-values ('cs_p1_paid','aa000000-0000-4000-8000-000000000001','cc000000-0000-4000-8000-000000000001','dd000000-0000-4000-8000-000000000001',1200,'GBP',now(),'pi_01',now(),now(),'w'),
-       ('cs_p1_open','aa000000-0000-4000-8000-000000000001','cc000000-0000-4000-8000-000000000001','dd000000-0000-4000-8000-000000000001',1200,'GBP',null,null,now(),now(),'w'),
-       ('cs_p2_paid','aa000000-0000-4000-8000-000000000001','cc000000-0000-4000-8000-000000000002','dd000000-0000-4000-8000-000000000001',1200,'GBP',now(),'pi_02',now(),now(),'w'),
-       ('cs_q1_paid','aa000000-0000-4000-8000-000000000002','cc000000-0000-4000-8000-000000000003','dd000000-0000-4000-8000-000000000001',1200,'GBP',now() - interval '5 years','pi_03',now(),now(),'w');
-insert into mission_gifts (id, mission_id, purchaser_id, stripe_session_id, amount_minor, currency, early_supply_consent_at, cancellation_ack_at, consent_wording)
-values ('ab000000-0000-4000-8000-000000000001','dd000000-0000-4000-8000-000000000001','aa000000-0000-4000-8000-000000000001','cs_p_gift',1200,'GBP',now(),now(),'w');
+-- The parent's own address is kept on each, for Stripe (20261106120000), and
+-- must not outlive the account (20261107150000).
+insert into checkout_intents (stripe_session_id, parent_id, child_id, mission_id, amount_minor, currency, paid_at, stripe_payment_intent_id, early_supply_consent_at, cancellation_ack_at, consent_wording, checkout_status, customer_email)
+values ('cs_p1_paid','aa000000-0000-4000-8000-000000000001','cc000000-0000-4000-8000-000000000001','dd000000-0000-4000-8000-000000000001',1200,'GBP',now(),'pi_01',now(),now(),'w','paid','p@wla-local.test'),
+       ('cs_p1_open','aa000000-0000-4000-8000-000000000001','cc000000-0000-4000-8000-000000000001','dd000000-0000-4000-8000-000000000001',1200,'GBP',null,null,now(),now(),'w','open','p@wla-local.test'),
+       ('cs_p2_paid','aa000000-0000-4000-8000-000000000001','cc000000-0000-4000-8000-000000000002','dd000000-0000-4000-8000-000000000001',1200,'GBP',now(),'pi_02',now(),now(),'w','paid','p@wla-local.test'),
+       ('cs_q1_paid','aa000000-0000-4000-8000-000000000002','cc000000-0000-4000-8000-000000000003','dd000000-0000-4000-8000-000000000001',1200,'GBP',now() - interval '5 years','pi_03',now(),now(),'w','paid','q@wla-local.test');
+insert into mission_gifts (id, mission_id, purchaser_id, stripe_session_id, amount_minor, currency, early_supply_consent_at, cancellation_ack_at, consent_wording, customer_email)
+values ('ab000000-0000-4000-8000-000000000001','dd000000-0000-4000-8000-000000000001','aa000000-0000-4000-8000-000000000001','cs_p_gift',1200,'GBP',now(),now(),'w','p@wla-local.test');
 create temp table gift_code as select code from activate_paid_gift('cs_p_gift','pi_gift');
 grant all on gift_code to public;
 select store_gift_code_copy('ab000000-0000-4000-8000-000000000001', (select code from gift_code), 'v1.k.i.t.b');
@@ -271,6 +273,9 @@ insert into r(label,ok) select 'every child and all their records are gone',
 insert into r(label,ok) select 'paid orders stay as financial records, with no family at all',
   (select bool_and(parent_id is null and child_id is null and paid_at is not null and amount_minor=1200) and count(*)=2
      from checkout_intents where stripe_session_id in ('cs_p1_paid','cs_p2_paid'));
+insert into r(label,ok) select 'the kept payment records keep no email address of the closed account',
+  not exists (select 1 from checkout_intents where stripe_session_id in ('cs_p1_paid','cs_p2_paid') and customer_email is not null)
+  and (select customer_email is null from mission_gifts where id='ab000000-0000-4000-8000-000000000001');
 insert into r(label,ok) select 'a gift they bought still works for whoever holds the code, without the buyer or their copy',
   (select status='paid' and purchaser_id is null and code_ciphertext is null and code_lookup is not null from mission_gifts where id='ab000000-0000-4000-8000-000000000001');
 insert into r(label,ok) select 'and can still be entered', confirm_gift_code((select code from gift_code),'198.51.100.77','claim-after-closure')='matched';

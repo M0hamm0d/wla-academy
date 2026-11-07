@@ -117,14 +117,9 @@ export async function acquireMission({
     return { kind: "granted", childId: child.id };
   }
 
-  // Step 4b — a payment already made but not yet confirmed by the webhook is
-  // not a reason to take a second one.
-  if (await settlePriorCheckouts(supabase, child.id, mission.id)) {
-    return { kind: "processing", childId: child.id };
-  }
-
   // Checked here, by the server, before Stripe: the page's checkboxes are a
-  // convenience, this is the requirement.
+  // convenience, this is the requirement. (A payment already made but not yet
+  // confirmed is caught by the durable attempt in createCheckoutSession.)
   if (!consent) {
     throw new CheckoutError(CONSENT_REQUIRED_MESSAGE, "consent_required");
   }
@@ -172,6 +167,7 @@ async function settlePriorCheckouts(
 
   let paid = false;
   for (const { stripe_session_id: id } of prior ?? []) {
+    if (!id) continue;
     try {
       const session = await stripe().checkout.sessions.retrieve(id);
       if (session.status === "complete" && session.payment_status === "paid") {
@@ -278,6 +274,84 @@ async function createCheckoutSession({
     );
   }
 
+  const admin = createAdminClient();
+  const selected = "id, attempt_key, stripe_session_id, checkout_status, amount_minor, currency, mission_title, mission_description, mission_slug, customer_email, site_origin, created_at";
+  const prior = await admin.from("checkout_intents").select(selected)
+    .eq("child_id", child.id).eq("mission_id", mission.id)
+    .in("checkout_status", ["initializing", "open"]).maybeSingle();
+  if (prior.error) {
+    logError("checkout_intent_lookup_failed", prior.error, { missionId: mission.id });
+    throw new CheckoutError("We couldn't check your payment. Please try again.", "provider");
+  }
+  let attempt = prior.data;
+  const reserved = attempt ? null : await admin.from("checkout_intents").insert({
+    parent_id: user.id,
+    child_id: child.id,
+    mission_id: mission.id,
+    amount_minor: mission.price_minor,
+    currency: mission.currency,
+    mission_title: mission.title,
+    mission_description: mission.description,
+    mission_slug: mission.slug,
+    customer_email: user.email ?? null,
+    site_origin: origin,
+    checkout_status: "initializing",
+    // What the parent agreed to, recorded with the order (D-152).
+    early_supply_consent_at: consent.earlySupplyConsentAt,
+    cancellation_ack_at: consent.cancellationAckAt,
+    consent_wording: consent.wording,
+  }).select(selected).maybeSingle();
+  if (reserved) {
+    attempt = reserved.data;
+    if (reserved.error?.code === "23505") {
+      const existing = await admin.from("checkout_intents").select(selected)
+        .eq("child_id", child.id).eq("mission_id", mission.id)
+        .in("checkout_status", ["initializing", "open"]).maybeSingle();
+      if (existing.error || !existing.data) {
+        logError("checkout_intent_lookup_failed", existing.error, { missionId: mission.id, found: Boolean(existing.data) });
+        throw new CheckoutError("We couldn't check your payment. Please try again.", "provider");
+      }
+    attempt = existing.data;
+    } else if (reserved.error || !attempt) {
+      logError("checkout_intent_reserve_failed", reserved.error, { missionId: mission.id });
+      throw new CheckoutError("We couldn't start the payment. Please try again.", "provider");
+    }
+  }
+  if (!attempt) throw new CheckoutError("We couldn't start the payment. Please try again.", "provider");
+
+  if (attempt.stripe_session_id) {
+    try {
+      const prior = await stripe().checkout.sessions.retrieve(attempt.stripe_session_id);
+      if (prior.status === "open" && prior.url) return { url: prior.url };
+      if (prior.status === "complete") throw new CheckoutError("Your payment is being confirmed.", "provider");
+      if (prior.status === "expired") {
+        await admin.from("checkout_intents").update({ checkout_status: "expired" }).eq("id", attempt.id);
+        throw new CheckoutError("That checkout expired. Please try again.", "provider");
+      }
+    } catch (error) {
+      if (error instanceof CheckoutError) throw error;
+      logError("stripe_prior_session_unavailable", error, { intentId: attempt.id });
+      throw new CheckoutError("We couldn't check your existing payment. Please try again shortly.", "provider");
+    }
+  }
+  if (!attempt.attempt_key) throw new CheckoutError("Your existing payment needs review. Please contact support.", "provider");
+
+  // Stripe retains idempotency keys for a bounded period. Never retry a
+  // session-create attempt after that window, when the same key could create
+  // a second session. The durable row stays visible for reconciliation.
+  if (Date.now() - new Date(attempt.created_at).getTime() > 23 * 60 * 60 * 1000) {
+    throw new CheckoutError("Your payment is being checked. Please try again later.", "provider");
+  }
+  const checkoutMission = {
+    ...mission,
+    title: attempt.mission_title ?? mission.title,
+    description: attempt.mission_description ?? mission.description,
+    slug: attempt.mission_slug ?? mission.slug,
+    price_minor: attempt.amount_minor,
+    currency: attempt.currency,
+  };
+  const checkoutOrigin = attempt.site_origin ?? origin;
+
   let session: Stripe.Checkout.Session;
   try {
     session = await stripe().checkout.sessions.create({
@@ -288,27 +362,34 @@ async function createCheckoutSession({
       // event the webhook does not handle — money taken, nothing granted.
       // Wallets that pay by card (Apple Pay, Google Pay) are part of `card`.
       payment_method_types: ["card"],
-      line_items: [missionLineItem(mission)],
-      customer_email: user.email,
+      line_items: [missionLineItem(checkoutMission)],
+      customer_email: attempt.customer_email ?? undefined,
       // My Missions reads `purchase=success` to say the mission WILL appear
       // once confirmed. It was `complete`, which nothing read, so the parent
       // came back from paying to no word at all.
-      success_url: `${origin}/academy/my-missions?purchase=success`,
-      cancel_url: `${origin}/purchase/${mission.slug}?cancelled=1`,
+      success_url: `${checkoutOrigin}/academy/my-missions?purchase=success`,
+      cancel_url: `${checkoutOrigin}/purchase/${checkoutMission.slug}?cancelled=1`,
+      client_reference_id: attempt.id,
       // Metadata is a convenience for the webhook; checkout_intents is the
       // authoritative record of who this was for.
       metadata: {
+        checkout_intent_id: attempt.id,
         child_id: child.id,
         mission_id: mission.id,
         parent_id: user.id,
       },
-    });
+    }, { idempotencyKey: `wla-mission-${attempt.attempt_key}` });
   } catch (error) {
     logError("stripe_checkout_create_failed", error, {
       missionId: mission.id,
       currency: mission.currency,
       priceMinor: mission.price_minor,
     });
+
+    const statusCode = (error as { statusCode?: number }).statusCode;
+    if (statusCode === 400 || statusCode === 401 || statusCode === 403) {
+      await admin.from("checkout_intents").update({ checkout_status: "failed" }).eq("id", attempt.id).eq("checkout_status", "initializing");
+    }
 
     throw new CheckoutError(
       "We couldn't start the payment. Please try again.",
@@ -320,6 +401,15 @@ async function createCheckoutSession({
     throw new CheckoutError("We couldn't start the payment.", "provider");
   }
 
+  if (session.status === "expired") {
+    await admin.from("checkout_intents").update({ stripe_session_id: session.id, checkout_status: "expired" }).eq("id", attempt.id);
+    throw new CheckoutError("That checkout expired. Please try again.", "provider");
+  }
+  if (session.status === "complete") {
+    await admin.from("checkout_intents").update({ stripe_session_id: session.id, checkout_status: "open" }).eq("id", attempt.id);
+    throw new CheckoutError("Your payment is being confirmed.", "provider");
+  }
+
   /*
    * Record the intent server-side BEFORE the parent leaves for Stripe. The
    * webhook resolves the child from HERE, so tampered metadata cannot redirect
@@ -327,19 +417,8 @@ async function createCheckoutSession({
    *
    * Service-role because the table is deliberately client-unwritable.
    */
-  const admin = createAdminClient();
-  const { error: intentError } = await admin.from("checkout_intents").insert({
-    stripe_session_id: session.id,
-    parent_id: user.id,
-    child_id: child.id,
-    mission_id: mission.id,
-    amount_minor: mission.price_minor,
-    currency: mission.currency,
-    // What the parent agreed to, recorded with the order (D-152).
-    early_supply_consent_at: consent.earlySupplyConsentAt,
-    cancellation_ack_at: consent.cancellationAckAt,
-    consent_wording: consent.wording,
-  });
+  const { error: intentError } = await admin.from("checkout_intents")
+    .update({ stripe_session_id: session.id, checkout_status: "open" }).eq("id", attempt.id);
 
   /*
    * Without the intent the webhook cannot tell whose purchase this is, and
@@ -349,12 +428,11 @@ async function createCheckoutSession({
    * moves.
    */
   if (intentError) {
-    logError("checkout_intent_insert_failed", intentError, {
-      sessionId: session.id,
-    });
+    logError("checkout_intent_session_update_failed", intentError, { intentId: attempt.id, sessionId: session.id });
     await stripe()
       .checkout.sessions.expire(session.id)
       .catch(() => {});
+    await admin.from("checkout_intents").update({ stripe_session_id: session.id, checkout_status: "failed" }).eq("id", attempt.id);
     throw new CheckoutError(
       "We couldn't start the payment. Please try again.",
       "provider",

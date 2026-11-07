@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 /**
  * SPRINT 2 SECURITY CHECKPOINT
@@ -223,7 +223,7 @@ describe("4. Active-child context", () => {
       "features/academy/actor.ts",
     ];
     for (const file of consumers) {
-      const rel = file.replace(root + "/", "");
+      const rel = relative(root, file).replaceAll("\\", "/");
       expect(
         allowed.some((a) => rel.endsWith(a)),
         `${rel} reads the active-child cookie`,
@@ -252,7 +252,7 @@ describe("5. Entitlement checks", () => {
       const content = stripComments(readFileSync(file, "utf8"));
       expect(
         content,
-        `${file.replace(root + "/", "")} branches on entitlement source`,
+        `${relative(root, file).replaceAll("\\", "/")} branches on entitlement source`,
       ).not.toMatch(
         /source\s*===?\s*["'](free|purchase|gift|redeemed|admin)["']/,
       );

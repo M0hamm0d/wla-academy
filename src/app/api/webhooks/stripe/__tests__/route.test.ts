@@ -45,6 +45,7 @@ const db: {
 
 vi.mock("@/lib/env", () => ({
   stripeEnv: () => ({ STRIPE_SECRET_KEY: "sk_test_x", STRIPE_WEBHOOK_SECRET: "whsec_x" }),
+  siteUrl: () => "https://academy.test",
 }));
 vi.mock("@/features/commerce/checkout", () => ({
   stripe: () => ({
@@ -174,7 +175,7 @@ const { sendMissionAccessEmail } = await import("@/lib/email/send");
 const { logError } = await import("@/lib/observability/logger");
 
 const INTENT = {
-  id: "intent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP",
+  id: "intent-1", parent_id: "parent-1", child_id: "child-1", mission_id: "m-1", amount_minor: 1200, currency: "GBP", checkout_status: "open",
   paid_at: null, confirmation_sent_at: null, consent_wording: "2026-11-06 | a | b", early_supply_consent_at: "2026-11-06T10:00:00Z",
 };
 
@@ -190,10 +191,15 @@ function deliver({
     data: {
       object: {
         id: "cs_1",
+        mode: "payment",
+        client_reference_id: db.gifts.length ? "gift-1" : "intent-1",
         payment_status: "paid",
         amount_total: 1200,
         currency: "gbp",
         payment_intent: "pi_1",
+        metadata: db.gifts.length
+          ? { gift: "1", gift_id: "gift-1", mission_id: "mission-1", parent_id: "parent-1" }
+          : { checkout_intent_id: "intent-1", mission_id: "m-1", child_id: "child-1", parent_id: "parent-1" },
         ...session,
       },
     },
@@ -397,10 +403,11 @@ describe("resolving the checkout intent", () => {
     expect(db.entitlements).toEqual([]);
   });
 
-  it("the child comes from our intent, not from Stripe metadata", async () => {
+  it("rejects a Checkout whose child metadata disagrees with the authoritative intent", async () => {
     const res = await deliver({ session: { metadata: { child_id: "someone-else" } } });
     expect(res.status).toBe(200);
-    expect(db.entitlements).toEqual([expect.objectContaining({ child_id: "child-1" })]);
+    expect(await res.json()).toMatchObject({ mismatch: true });
+    expect(db.entitlements).toEqual([]);
   });
 });
 
@@ -486,7 +493,8 @@ describe("the payment record and the order confirmation (D-148, D-152)", () => {
 });
 
 describe("a gift (D-149)", () => {
-  const GIFT = { id: "gift-1", stripe_session_id: "cs_1", amount_minor: 1200, currency: "GBP" };
+  // No recipient address: WLA never asks for one (D-149).
+  const GIFT = { id: "gift-1", purchaser_id: "parent-1", mission_id: "mission-1", stripe_session_id: "cs_1", amount_minor: 1200, currency: "GBP" };
   beforeEach(() => {
     db.intents.clear();
     db.gifts = [{ ...GIFT }];

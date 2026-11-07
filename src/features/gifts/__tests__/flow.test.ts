@@ -137,6 +137,7 @@ const pending = (): Row => ({
 
 beforeEach(() => {
   vi.stubEnv("CHILD_CODE_ENCRYPTION_KEY", KEY);
+  vi.stubEnv("SITE_URL", "https://academy.test");
   db.gifts = [pending()];
   db.profiles = [{ id: "parent-1", email: "buyer@example.test" }];
   db.rpc.mockReset();

@@ -74,6 +74,9 @@ export const IconMission = (p: IconProps) => (
 export const IconJournal = (p: IconProps) => (
   <Svg {...p}><path d="M12 6.5c-1.8-1.4-4.4-2-7.5-2v13c3.1 0 5.7.6 7.5 2 1.8-1.4 4.4-2 7.5-2v-13c-3.1 0-5.7.6-7.5 2Z" /><path d="M12 6.5v13" /></Svg>
 );
+export const IconReviews = (p: IconProps) => (
+  <Svg {...p}><path d="M4 5.5h16v11H9l-5 3v-14Z" /><path d="m12 8 1 2.1 2.3.3-1.7 1.6.4 2.3-2-1.1-2 1.1.4-2.3-1.7-1.6 2.3-.3L12 8Z" /></Svg>
+);
 export const IconImport = (p: IconProps) => (
   <Svg {...p}><path d="M12 3.5v11" /><path d="m7.5 10 4.5 4.5 4.5-4.5" /><path d="M4.5 16.5v2a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-2" /></Svg>
 );

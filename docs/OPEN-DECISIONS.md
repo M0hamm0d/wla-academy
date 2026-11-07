@@ -283,6 +283,16 @@ The gift wording on its Buy a Gift page was corrected to match D-149, in the loc
 
 Also needed in Lovable for gifting to work at all: `VITE_ACADEMY_URL` set to the Academy's address. Without it, Buy a Gift and `/redeem-gift` send visitors to `http://localhost:3000`. The website's `/admin/gifts` still shows the legacy `gifts` records with purchasers' names and emails. It doesn't display the old codes, but `adminListGifts` selects every column, so the codes still reach an administrator's browser (OPEN-24).
 
+## OPEN-31 — The reviews table has no migration, and holds reviewers' details · 🔴 needs the developer and WLA · D-158
+
+The admin Reviews page (PR #2) reads a `reviews` table that exists only on the hosted database: no migration in this repository creates it, so a database built from the migrations (local, a restore rehearsal, a new environment) has no reviews and the page can't load. It stores `reviewer_name` and `reviewer_email`, and it isn't described in `docs/DATA-MODEL.md`, so it isn't covered by account closure, the retention schedule or the deletion ledger (D-148, D-157).
+
+**Decide:**
+1. The developer adds the table's real definition (columns, RLS, grants) as a migration dated before `20261103090000`, written `create table if not exists` so the hosted database is unaffected, and documents it in `docs/DATA-MODEL.md`.
+2. WLA decides how long a review and the reviewer's email are kept, and whether a review is removed or anonymised when its author closes their account.
+
+**Until then:** `20261103090000` applies its policies only where the table exists, and the Reviews page works only against the hosted database.
+
 ## OPEN-30 — Where the deletion ledger is kept · 🔴 needs WLA · D-157
 
 Deletions are now written to a ledger that must survive a database restore, so it can't live in the database, or in this project's Storage (whose records are in the database). The code writes it to a directory (`PRIVACY_LEDGER_DIR`) under a key (`PRIVACY_LEDGER_KEY`). That works locally and on any server with a lasting disk. **Vercel has no lasting disk**, so for the Academy as intended, WLA must choose a separate, access-controlled place to keep it, for example a storage bucket in a different account with versioning turned on. Then a small sink for it is added beside the directory one.
@@ -326,6 +336,7 @@ The site's `/terms` is still a placeholder. The checkout statements and the orde
 | 28  | Website privacy gaps  | 🔴 needs the website's owner               |
 | 29  | Terms for checkout    | 🔴 needs WLA                               |
 | 30  | Deletion ledger location | 🔴 needs WLA: blocks a safe restore      |
+| 31  | Reviews table          | 🔴 no migration; reviewer data not in closure or retention |
 
 **14 resolved · 1 deferred · 5 need you (OPEN-20, OPEN-24, OPEN-27, OPEN-28, OPEN-29) · 1 blocked on source material (OPEN-23).**
 

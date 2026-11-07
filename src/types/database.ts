@@ -34,6 +34,8 @@ export type ScreenTypeDb =
   | "completion";
 export type ResourceType = "pdf" | "image" | "document" | "other";
 export type EvidenceType = "physical" | "digital";
+export type ReviewAttribution = "anonymous" | "first_name" | "initials";
+export type ReviewStatus = "pending" | "published" | "declined";
 
 export type Json =
   string | number | boolean | null | { [k: string]: Json } | Json[];
@@ -99,7 +101,16 @@ export type MissionGiftRow = {
   id: string;
   mission_id: string;
   purchaser_id: string | null;
-  stripe_session_id: string;
+  /** Null only while the Stripe session is being created. */
+  stripe_session_id: string | null;
+  attempt_key: string | null;
+  checkout_status: "initializing" | "open" | "paid" | "expired" | "failed";
+  mission_title: string | null;
+  mission_description: string | null;
+  mission_slug: string | null;
+  /** The purchaser's own address, for Stripe. Removed when the account closes (D-148). */
+  customer_email: string | null;
+  site_origin: string | null;
   stripe_payment_intent_id: string | null;
   amount_minor: number;
   currency: string;
@@ -245,9 +256,41 @@ export type StripeEventRow = {
   processed_at: string;
 };
 
+/** Shared public-site review table; its schema is provisioned in the shared Supabase project. */
+export type ReviewRow = {
+  id: string;
+  rating: number;
+  body: string;
+  mission_slug: string | null;
+  mission_name: string | null;
+  reviewer_name: string | null;
+  reviewer_email: string | null;
+  attribution: ReviewAttribution;
+  display_name: string;
+  consent: boolean;
+  status: ReviewStatus;
+  verified: boolean;
+  featured: boolean;
+  featured_order: number;
+  admin_notes: string | null;
+  published_at: string | null;
+  submitted_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export type CheckoutIntentRow = {
   id: string;
-  stripe_session_id: string;
+  /** Null only while the Stripe session is being created. */
+  stripe_session_id: string | null;
+  attempt_key: string | null;
+  checkout_status: "initializing" | "open" | "paid" | "expired" | "failed";
+  mission_title: string | null;
+  mission_description: string | null;
+  mission_slug: string | null;
+  /** The purchaser's own address, for Stripe. Removed when the account closes (D-148). */
+  customer_email: string | null;
+  site_origin: string | null;
   /** Null once the account closed: the paid record stays, without the family (D-148). */
   parent_id: string | null;
   child_id: string | null;
@@ -602,6 +645,7 @@ export type Database = {
         Update: Partial<Pick<ProfileRow, "email" | "name">>;
         Relationships: [];
       };
+      reviews: Table<ReviewRow, "body" | "rating">;
       child_profiles: Table<ChildProfileRow, "parent_id" | "display_name">;
       missions: Table<
         MissionRow,
@@ -646,7 +690,6 @@ export type Database = {
       mission_gifts: Table<
         MissionGiftRow,
         | "mission_id"
-        | "stripe_session_id"
         | "amount_minor"
         | "currency"
         | "early_supply_consent_at"
@@ -655,7 +698,6 @@ export type Database = {
       >;
       checkout_intents: Table<
         CheckoutIntentRow,
-        | "stripe_session_id"
         | "parent_id"
         | "child_id"
         | "mission_id"
@@ -1451,6 +1493,8 @@ export type Database = {
       screen_type: ScreenTypeDb;
       resource_type: ResourceType;
       evidence_type: EvidenceType;
+      review_attribution: ReviewAttribution;
+      review_status: ReviewStatus;
     };
     CompositeTypes: { [_ in never]: never };
   };

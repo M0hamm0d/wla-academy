@@ -18,9 +18,11 @@ insert into child_profiles (id, parent_id, display_name) values
  ('c0000000-0000-4000-8000-0000000000b1','b0000000-0000-4000-8000-00000000000b','Child B1');
 insert into missions (id, slug, title, lab, min_age, max_age, is_free, price_minor, currency, published)
 values ('d0000000-0000-4000-8000-000000000001','gift-regression','Gift regression','decision',11,15,false,1200,'GBP',false);
-insert into mission_gifts (id, mission_id, purchaser_id, stripe_session_id, amount_minor, currency, early_supply_consent_at, cancellation_ack_at, consent_wording)
-values ('e0000000-0000-4000-8000-000000000001','d0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-00000000000b','cs_g1',1200,'GBP',now(),now(),'v | consent | ack'),
-       ('e0000000-0000-4000-8000-000000000002','d0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-00000000000b','cs_g2',1200,'GBP',now(),now(),'v | consent | ack');
+-- One open gift checkout per purchaser and mission (20261107150000): Stripe has
+-- already completed the second of these two.
+insert into mission_gifts (id, mission_id, purchaser_id, stripe_session_id, amount_minor, currency, early_supply_consent_at, cancellation_ack_at, consent_wording, checkout_status)
+values ('e0000000-0000-4000-8000-000000000001','d0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-00000000000b','cs_g1',1200,'GBP',now(),now(),'v | consent | ack','open'),
+       ('e0000000-0000-4000-8000-000000000002','d0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-00000000000b','cs_g2',1200,'GBP',now(),now(),'v | consent | ack','paid');
 
 -- ---------------------------------------------------------- the schema --
 insert into r(label,ok) select 'no recipient address is stored: the column is gone',
@@ -28,6 +30,16 @@ insert into r(label,ok) select 'no recipient address is stored: the column is go
 insert into r(label,ok) select 'the email-based functions are gone',
   to_regprocedure('confirm_gift_email(text,text,text)') is null and to_regprocedure('issue_gift_code(text)') is null
   and to_regprocedure('withdraw_gift_code(uuid,text)') is null;
+insert into r(label,ok) select 'nothing of the recipient-email model came back with the checkout reconciliation',
+  to_regclass('gift_request_limits') is null and to_regprocedure('consume_gift_request_limit(text,text,boolean)') is null
+  and not exists (select 1 from information_schema.columns where table_name='mission_gifts' and column_name='email_delivery_locked_until');
+do $$ begin
+  insert into mission_gifts (mission_id,purchaser_id,amount_minor,currency,early_supply_consent_at,cancellation_ack_at,consent_wording,checkout_status)
+  values ('d0000000-0000-4000-8000-000000000001','b0000000-0000-4000-8000-00000000000b',1200,'GBP',now(),now(),'v | a | b','initializing');
+  insert into r(label,ok) values ('a second open gift checkout for the same purchaser and mission is refused', false);
+exception when unique_violation then
+  insert into r(label,ok) values ('a second open gift checkout for the same purchaser and mission is refused', true);
+end $$;
 do $$ begin
   begin insert into mission_gifts (mission_id,stripe_session_id,amount_minor,currency) values ('d0000000-0000-4000-8000-000000000001','cs_x',1,'GBP');
         insert into r(label,ok) values ('a gift without both checkout statements is refused (D-152)', false);

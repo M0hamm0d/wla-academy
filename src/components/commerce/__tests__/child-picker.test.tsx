@@ -131,7 +131,9 @@ describe("choosing or adding a child while buying (D-144)", () => {
     createChild.mockResolvedValue({ fieldErrors: { displayName: "Enter a name." } });
     render(<PurchaseForm {...base} />);
     fireEvent.click(screen.getByRole("button", { name: "Add a new child" }));
-    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "   " } });
+    // A blank name never leaves the browser now (the field's one-name pattern),
+    // so the server's refusal is exercised with a name the browser accepts.
+    fireEvent.change(screen.getByLabelText(/Name/), { target: { value: "Bilal" } });
     fireEvent.click(screen.getByRole("button", { name: "Add this child" }));
     await screen.findByText("Enter a name.");
     expect(screen.getByRole("radio", { name: "Amina" })).toBeChecked();

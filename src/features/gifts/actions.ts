@@ -10,6 +10,7 @@ import type { FormState } from "@/features/auth/schemas";
 import { logError } from "@/lib/observability/logger";
 import { AccessError, requireOwnedChild, requireParent } from "@/lib/permissions";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { siteUrl } from "@/lib/env";
 import { purchaseGift } from "./checkout";
 import { GIFT_CLAIM_COOKIE, GIFT_CLAIM_COOKIE_PATH, GIFT_CLAIM_SECONDS, GIFT_REDEEM_PATH } from "./claim";
 import { keepPurchaserCopy } from "./fulfil";
@@ -17,21 +18,15 @@ import { confirmGiftCode } from "./redeem";
 import { formatGiftCode, giftCodeSchema } from "./schemas";
 import { hashGiftToken, looksLikeGiftToken } from "./token";
 
-async function requestOrigin(): Promise<string> {
-  const h = await headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host");
-  const proto = h.get("x-forwarded-proto") ?? "http";
-  return `${proto}://${host}`;
-}
-
 /**
- * Who is guessing, for the attempt limit only. The host's proxy sets the first
- * x-forwarded-for entry. The database keeps an HMAC of it, never the address.
+ * Who is guessing, for the attempt limit only. Vercel supplies x-real-ip at the
+ * edge; the first x-forwarded-for entry is the fallback for other hosts. The
+ * database keeps an HMAC of it, never the address.
  */
 async function requestClient(): Promise<string> {
   const h = await headers();
   const forwarded = h.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return forwarded || h.get("x-real-ip") || "unknown";
+  return h.get("x-real-ip") || forwarded || "unknown";
 }
 
 /** "Give as a gift?" on the purchase page: on to Stripe, granting nothing. */
@@ -44,7 +39,7 @@ export async function giftMissionAction(
   try {
     result = await purchaseGift({
       missionSlug,
-      origin: await requestOrigin(),
+      origin: siteUrl(),
       consent: consentFromForm(formData),
     });
   } catch (error) {
@@ -126,6 +121,7 @@ export async function redeemGiftAction(
     userId = user.id;
     await requireOwnedChild(childId); // never trust the submitted id
   } catch (error) {
+    if (error instanceof AccessError && error.reason === "unauthenticated") redirect("/login?next=%2Fredeem");
     if (error instanceof AccessError) return { error: "Choose who this mission is for." };
     throw error;
   }
