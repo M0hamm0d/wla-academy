@@ -4,6 +4,7 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Field, FormError, Input } from "@/components/ui/field";
+import { PasswordInput } from "@/components/auth/password-input";
 import { signInAction } from "@/features/auth/actions";
 import { emptyFormState } from "@/features/auth/schemas";
 
@@ -34,10 +35,9 @@ export function SignInForm({ next }: { next?: string }) {
         htmlFor="password"
         error={state.fieldErrors?.password}
       >
-        <Input
+        <PasswordInput
           id="password"
           name="password"
-          type="password"
           autoComplete="current-password"
           required
           invalid={Boolean(state.fieldErrors?.password)}

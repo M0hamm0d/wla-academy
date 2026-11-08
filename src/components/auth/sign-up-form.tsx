@@ -4,6 +4,7 @@ import { useActionState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Field, FormError, FormNotice, Input } from "@/components/ui/field";
+import { PasswordInput } from "@/components/auth/password-input";
 import { signUpAction } from "@/features/auth/actions";
 import { emptyFormState } from "@/features/auth/schemas";
 
@@ -53,10 +54,9 @@ export function SignUpForm({ next }: { next?: string }) {
         hint="At least 8 characters."
         error={state.fieldErrors?.password}
       >
-        <Input
+        <PasswordInput
           id="password"
           name="password"
-          type="password"
           autoComplete="new-password"
           required
           invalid={Boolean(state.fieldErrors?.password)}
