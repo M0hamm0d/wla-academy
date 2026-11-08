@@ -199,14 +199,14 @@ export function BuilderWorkspace({
               Choose how to begin. Nothing is created until you confirm.
             </p>
             <div className="mt-[var(--space-l)] grid gap-[var(--space-l)] md:grid-cols-2">
-              <div>
+              {/* <div>
                 <h4 className="font-medium">Start from a proven pattern</h4>
                 <p className="mt-[2px] text-[length:var(--text-small)] text-[var(--color-text-muted)]">
                   A ready-made structure from earlier WLA missions — its screens, branches and handoffs — that you then
                   rewrite in your own words.
                 </p>
                 <PatternPicker missionId={missionId} slug={slug} version={version} suggestedPrefix="part1_" open />
-              </div>
+              </div> */}
               <div>
                 <h4 className="font-medium">Add your first screen</h4>
                 <p className="mt-[2px] text-[length:var(--text-small)] text-[var(--color-text-muted)]">
