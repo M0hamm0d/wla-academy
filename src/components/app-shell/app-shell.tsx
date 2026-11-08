@@ -156,7 +156,7 @@ export function AppShell({
           aria-label="Academy"
           className={cn(
             "border-[var(--color-border)] lg:w-[248px] lg:shrink-0 lg:border-r",
-            "lg:sticky lg:top-[64px] lg:h-[calc(100dvh-64px)]",
+            "lg:sticky lg:top-[64px] lg:h-[calc(100dvh-64px)] lg:overflow-y-auto scrollbar-hidden",
             "flex-col justify-between p-[var(--space-m)] lg:flex print:!hidden",
             open ? "flex border-b" : "hidden",
           )}
