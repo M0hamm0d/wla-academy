@@ -275,7 +275,7 @@ export default async function AccountPage() {
             Academy help →
           </Link>
           <Link
-            href="/missions"
+            href="/academy/my-missions"
             className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4"
           >
             Explore Missions →

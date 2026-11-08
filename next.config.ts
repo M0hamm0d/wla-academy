@@ -6,6 +6,16 @@ const supabase = process.env.NEXT_PUBLIC_SUPABASE_URL
   : null;
 
 const nextConfig: NextConfig = {
+  async redirects() {
+    const academyHome = "/academy/my-missions";
+    return [
+      { source: "/", destination: academyHome, permanent: false },
+      { source: "/about", destination: academyHome, permanent: false },
+      { source: "/labs", destination: academyHome, permanent: false },
+      { source: "/journal", destination: academyHome, permanent: false },
+      { source: "/missions/:path*", destination: academyHome, permanent: false },
+    ];
+  },
   images: {
     remotePatterns: supabase
       ? [

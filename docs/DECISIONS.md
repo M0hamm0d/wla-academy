@@ -181,6 +181,15 @@ silently resolve a product conflict through code."_
 
 ---
 
+## D-159 — Academy My Missions is the landing destination (2026-11-08)
+
+The root path and the retired public-site routes (`/about`, `/labs`,
+`/journal`, and `/missions/*`) redirect to `/academy/my-missions`. Existing
+public static assets are retained. The redirect is temporary so it can be
+revisited without a permanent browser or search-engine cache.
+
+---
+
 ## Conflicts found between source documents
 
 ### C1 — Primary navigation _(CLOSED — client decision, 2026-09-25)_

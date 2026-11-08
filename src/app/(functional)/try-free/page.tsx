@@ -49,7 +49,10 @@ export default async function TryFreePage() {
         <EmptyState
           title="No free mission right now"
           body="Have a look at the full collection instead."
-          action={{ label: "Explore Missions →", href: "/missions" }}
+          action={{
+            label: "Explore Missions →",
+            href: "/academy/my-missions",
+          }}
         />
       ) : (
         <ul className="mt-[var(--space-xl)] border-t border-[var(--color-border)]">
