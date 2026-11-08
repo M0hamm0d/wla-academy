@@ -3,6 +3,10 @@
     {
       "path": "/api/cron/reconcile-checkouts",
       "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/privacy",
+      "schedule": "45 3 * * *"
     }
   ]
 }
