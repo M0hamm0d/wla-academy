@@ -52,7 +52,13 @@ async function deliver(to: string, subject: string, text: string, label: string)
       body: JSON.stringify({ from, to, subject, text }),
     });
     if (!response.ok) {
-      console.error(`[email] ${label} send failed`, { status: response.status });
+      // console.error(`[email] ${label} send failed`, { status: response.status });
+      const errorBody = await response.text();
+
+      console.error(`[email] ${label} send failed`, {
+        status: response.status,
+        providerResponse: errorBody,
+      });
       return { sent: false, reason: `http_${response.status}` };
     }
     return { sent: true };
