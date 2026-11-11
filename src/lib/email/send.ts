@@ -37,6 +37,10 @@ async function deliver(to: string, subject: string, text: string, label: string)
   const apiKey = process.env.RESEND_API_KEY;
   const from = process.env.EMAIL_FROM;
 
+  console.info("[email] sender configuration", {
+    from: JSON.stringify(from),
+  });
+
   if (!apiKey || !from) {
     const mailpit = devMailpitUrl();
     if (mailpit) return sendToMailpit(mailpit, { to, subject, text });
