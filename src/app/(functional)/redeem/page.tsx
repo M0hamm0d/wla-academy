@@ -16,8 +16,7 @@ export const metadata = {
 };
 
 /**
- * REDEEM A GIFT (D-149). The one redemption page; the website's Redeem a Gift
- * and the old /redeem-gift address both arrive here.
+ * REDEEM A GIFT (D-149). The one redemption page linked by the public site.
  *
  *   1. Enter the code the purchaser shared. Nothing is shown until it matches.
  *   2. Sign in or create an account: the same account flow as buying.

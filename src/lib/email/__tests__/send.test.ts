@@ -182,7 +182,6 @@ describe("the gift purchase email (D-149)", () => {
   beforeEach(() => {
     vi.stubEnv("NODE_ENV", "test");
     vi.stubEnv("WLA_DEV_MAILPIT_URL", "");
-    vi.stubEnv("NEXT_PUBLIC_SITE_URL", "https://academy.test");
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -199,7 +198,7 @@ describe("the gift purchase email (D-149)", () => {
     expect(body.to).toBe("buyer@example.test");
     expect(body.subject).not.toContain("ABCD");
     expect(body.text).toContain("ABCD-EFGH-JKMN");
-    expect(body.text).toContain("https://academy.test/redeem");
+    expect(body.text).toContain("https://wla-academy-kappa.vercel.app/redeem");
     expect(body.text).toMatch(/doesn't expire/);
     expect(body.text).toContain(CANCELLATION_ACKNOWLEDGEMENT);
     expect(body.text).toContain("£12.00");

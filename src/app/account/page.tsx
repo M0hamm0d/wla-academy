@@ -222,7 +222,7 @@ export default async function AccountPage() {
           <h2 id="account-gifts" className="text-[length:var(--text-h3)]">
             Gifts you&rsquo;ve bought
           </h2>
-          <PurchasedGifts gifts={gifts} siteUrl={process.env.NEXT_PUBLIC_SITE_URL ?? ""} />
+          <PurchasedGifts gifts={gifts} />
         </section>
       )}
 

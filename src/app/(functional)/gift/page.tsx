@@ -42,7 +42,7 @@ export default async function GiftPage({
         {purchase === "success" ? (
           <div className="mt-[var(--space-l)]">
             <FormNotice message="Thank you. Once your payment is confirmed, your gift code appears here and in your confirmation email. Share it with the person you're giving it to." />
-            <PurchasedGifts gifts={bought} siteUrl={process.env.NEXT_PUBLIC_SITE_URL ?? ""} />
+            <PurchasedGifts gifts={bought} />
           </div>
         ) : (
           <p className="wla-measure mt-[var(--space-m)] text-[var(--color-text-muted)]">

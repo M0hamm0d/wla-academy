@@ -3,6 +3,7 @@
 import { useActionState, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { FormError, FormNotice } from "@/components/ui/field";
+import { GIFT_REDEEM_URL } from "@/features/gifts/claim";
 import { reissueGiftCodeAction, type ReissueState } from "@/features/gifts/actions";
 import type { PurchasedGift } from "@/features/gifts/purchaser";
 
@@ -14,7 +15,7 @@ import type { PurchasedGift } from "@/features/gifts/purchaser";
  * Copy and Share say so in words when they fail, and the code stays on screen
  * to write down.
  */
-export function PurchasedGifts({ gifts, siteUrl }: { gifts: PurchasedGift[]; siteUrl: string }) {
+export function PurchasedGifts({ gifts }: { gifts: PurchasedGift[] }) {
   if (gifts.length === 0) return null;
   return (
     <ul className="mt-[var(--space-s)] flex flex-col gap-[var(--space-l)]">
@@ -25,7 +26,7 @@ export function PurchasedGifts({ gifts, siteUrl }: { gifts: PurchasedGift[]; sit
           <p className="text-[length:var(--text-small)] text-[var(--color-text-muted)]">
             Bought {new Date(g.createdAt).toLocaleDateString("en-GB")} · {statusWords(g)}
           </p>
-          {g.status === "paid" && <GiftCode gift={g} siteUrl={siteUrl} />}
+          {g.status === "paid" && <GiftCode gift={g} />}
         </li>
       ))}
     </ul>
@@ -40,7 +41,7 @@ function statusWords(g: PurchasedGift): string {
   return "Ready to share. Not redeemed yet.";
 }
 
-function GiftCode({ gift, siteUrl }: { gift: PurchasedGift; siteUrl: string }) {
+function GiftCode({ gift }: { gift: PurchasedGift }) {
   const [state, action, isPending] = useActionState(reissueGiftCodeAction, {} as ReissueState);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [replacing, setReplacing] = useState(false);
@@ -50,9 +51,8 @@ function GiftCode({ gift, siteUrl }: { gift: PurchasedGift; siteUrl: string }) {
     queueMicrotask(() => setCanShare(typeof navigator.share === "function"));
   }, []);
   const code = state.code ?? gift.code;
-  const redeemAt = `${siteUrl.replace(/\/$/, "")}/redeem`;
   const message = code
-    ? `I've given you a Within Lab Academy mission: ${gift.missionTitle}. To redeem it, go to ${redeemAt} and enter this code: ${code}`
+    ? `I've given you a Within Lab Academy mission: ${gift.missionTitle}. To redeem it, go to ${GIFT_REDEEM_URL} and enter this code: ${code}`
     : "";
 
   async function copy(text: string, what: string) {

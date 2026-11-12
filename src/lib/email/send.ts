@@ -1,5 +1,6 @@
 import "server-only";
 
+import { GIFT_REDEEM_URL } from "@/features/gifts/claim";
 import { devMailpitUrl, sendToMailpit } from "./dev-mailpit";
 import { formatPrice } from "@/lib/utils";
 
@@ -175,7 +176,6 @@ export async function sendGiftPurchaseEmail(email: GiftPurchaseEmail): Promise<O
 }
 
 function renderGiftPurchaseText(email: GiftPurchaseEmail): string {
-  const site = (process.env.NEXT_PUBLIC_SITE_URL ?? "").replace(/\/$/, "");
   return [
     `Thank you for giving ${email.missionTitle}.`,
     "",
@@ -184,7 +184,7 @@ function renderGiftPurchaseText(email: GiftPurchaseEmail): string {
     `  ${email.code}`,
     "",
     "Share it with the person you're giving it to, however you like. To redeem it,",
-    `they go to ${site ? `${site}/redeem` : "Redeem a Gift"}, enter the code, sign in or create`,
+    `they go to ${GIFT_REDEEM_URL}, enter the code, sign in or create`,
     "an account, and choose their child. The code works once and doesn't expire.",
     "",
     "Keep the code private until you give it: whoever has it can redeem the gift.",

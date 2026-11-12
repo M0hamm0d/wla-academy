@@ -281,7 +281,7 @@ Found while inventorying; these are in the Lovable project, not this repository:
 
 The gift wording on its Buy a Gift page was corrected to match D-149, in the local copy only. The live site needs the same change in Lovable.
 
-Also needed in Lovable for gifting to work at all: `VITE_ACADEMY_URL` set to the Academy's address. Without it, Buy a Gift and `/redeem-gift` send visitors to `http://localhost:3000`. The website's `/admin/gifts` still shows the legacy `gifts` records with purchasers' names and emails. It doesn't display the old codes, but `adminListGifts` selects every column, so the codes still reach an administrator's browser (OPEN-24).
+The public site's Buy a Gift handoff and gift redemption links use the Academy origin. Redemption links open the Academy's `/redeem` page in a new tab; the retained public `/redeem-gift` route now offers a manual link there instead of running the legacy flow. The website's `/admin/gifts` still shows the legacy `gifts` records with purchasers' names and emails. It doesn't display the old codes, but `adminListGifts` selects every column, so the codes still reach an administrator's browser (OPEN-24).
 
 ## OPEN-31 — The reviews table has no migration, and holds reviewers' details · 🔴 needs the developer and WLA · D-158
 

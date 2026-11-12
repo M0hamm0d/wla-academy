@@ -11,5 +11,6 @@
 export const GIFT_CLAIM_COOKIE = "wla_gift_claim";
 export const GIFT_CLAIM_COOKIE_PATH = "/";
 export const GIFT_REDEEM_PATH = "/redeem";
+export const GIFT_REDEEM_URL = "https://wla-academy-kappa.vercel.app/redeem";
 /** Long enough to create an account and follow its confirmation email. */
 export const GIFT_CLAIM_SECONDS = 24 * 60 * 60;
