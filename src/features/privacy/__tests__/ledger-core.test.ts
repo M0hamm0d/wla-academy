@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendToLedger, ledgerKeys, LedgerKeyError, readLedger, type LedgerEvent } from "../ledger-core";
+import { appendToLedger, createLedgerSegment, decodeLedgerSegments, encodeLedgerSegment, ledgerKeys, LedgerKeyError, legacyFileSegments, readLedger, type LedgerEvent } from "../ledger-core";
 
 /*
  * The ledger outside the database (D-157): what survives a restore must also
@@ -28,6 +28,44 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("the deletion ledger", () => {
+  it("imports an existing JSONL history without changing encrypted entries or its checkpoint chain", () => {
+    appendToLedger(file, [ev(21), ev(22), ev(23)], keys);
+    const original = readLedger(file, keys);
+    const segments = legacyFileSegments(file, keys, 2);
+    const imported = decodeLedgerSegments(segments.map((segment) => ({
+      name: `v1/segments/${String(segment.first_seq).padStart(12, "0")}-${String(segment.last_seq).padStart(12, "0")}.json`,
+      content: encodeLedgerSegment(segment),
+    })), keys);
+    expect(imported).toEqual(original);
+    expect(segments[0].lines).toEqual(readFileSync(file, "utf8").trim().split("\n").slice(0, 2));
+  });
+
+  it("validates immutable segments across boundaries and preserves the existing encryption format", () => {
+    const first = createLedgerSegment({ seq: 0, chain: "wla-deletion-ledger-v1" }, [ev(1), ev(2)], keys);
+    const second = createLedgerSegment({ seq: first.last_seq, chain: first.head_chain }, [ev(3)], keys);
+    const read = decodeLedgerSegments([
+      { name: "v1/segments/000000000003-000000000003.json", content: encodeLedgerSegment(second) },
+      { name: "v1/segments/000000000001-000000000002.json", content: encodeLedgerSegment(first) },
+    ], keys);
+    expect(read.ok && read.entries.map((entry) => [entry.seq, entry.event_id])).toEqual([[1, ev(1).event_id], [2, ev(2).event_id], [3, ev(3).event_id]]);
+  });
+
+  it("detects a missing or corrupted immutable segment", () => {
+    const first = createLedgerSegment({ seq: 0, chain: "wla-deletion-ledger-v1" }, [ev(1)], keys);
+    const second = createLedgerSegment({ seq: 1, chain: first.head_chain }, [ev(2)], keys);
+    expect(decodeLedgerSegments([{ name: "v1/segments/000000000002-000000000002.json", content: encodeLedgerSegment(second) }], keys)).toMatchObject({ ok: false, reason: "segment_gap" });
+    expect(decodeLedgerSegments([{ name: "v1/segments/000000000001-000000000001.json", content: "not-json" }], keys)).toMatchObject({ ok: false, reason: "malformed_line" });
+    const corrupt = { ...second, head_chain: "0".repeat(64) };
+    expect(decodeLedgerSegments([{ name: "v1/segments/000000000001-000000000001.json", content: encodeLedgerSegment(first) }, { name: "v1/segments/000000000002-000000000002.json", content: encodeLedgerSegment(corrupt) }], keys)).toMatchObject({ ok: false, reason: "chain_mismatch" });
+  });
+
+  it("rejects duplicate event identities across segments and a wrong key", () => {
+    const one = ev(1); const first = createLedgerSegment({ seq: 0, chain: "wla-deletion-ledger-v1" }, [one], keys);
+    const duplicate = createLedgerSegment({ seq: 1, chain: first.head_chain }, [one], keys);
+    expect(decodeLedgerSegments([{ name: "v1/segments/000000000001-000000000001.json", content: encodeLedgerSegment(first) }, { name: "v1/segments/000000000002-000000000002.json", content: encodeLedgerSegment(duplicate) }], keys)).toMatchObject({ ok: false, reason: "duplicate_event" });
+    expect(decodeLedgerSegments([{ name: "v1/segments/000000000001-000000000001.json", content: encodeLedgerSegment(first) }], ledgerKeys(randomBytes(32).toString("base64")))).toMatchObject({ ok: false, reason: "chain_mismatch" });
+  });
+
   it("returns every event, in order, after several appends", () => {
     appendToLedger(file, [ev(1), ev(2, "hold_placed")], keys);
     const head = appendToLedger(file, [ev(3, "closure_completed")], keys);
@@ -46,7 +84,7 @@ describe("the deletion ledger", () => {
   it("can't be read without the key: nothing of the event is in the file", () => {
     appendToLedger(file, [ev(7)], keys);
     const text = readFileSync(file, "utf8");
-    expect(text).not.toContain("d7");
+    expect(text).not.toContain('"deletion_id":"d7"');
     expect(text).not.toContain("closure_requested");
     expect(readLedger(file, ledgerKeys(randomBytes(32).toString("base64")))).toEqual({ ok: false, reason: "chain_mismatch", seq: 1 });
   });

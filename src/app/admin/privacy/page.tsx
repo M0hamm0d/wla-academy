@@ -21,15 +21,6 @@ const STATUS: Record<string, string> = {
   completed: "Completed",
 };
 
-/**
- * PRIVACY (D-148). The operational evidence for account closure and retention:
- * every closure with its step, attempts and error code; anything overdue
- * against the 30-day target; the documented exceptions (holds) and their
- * annual review; and what each daily retention run removed.
- *
- * Ids, dates and counts only: a closed family's name or address is not kept,
- * so it can't be shown. Nothing here edits a family's data directly.
- */
 export default async function PrivacyAdminPage() {
   const { supabase } = await requireAdmin();
   const [{ data: deletions }, { data: holds }, { data: runs }, { data: ledgerRows }] = await Promise.all([
@@ -97,7 +88,7 @@ export default async function PrivacyAdminPage() {
           {ledger === "unconfigured"
             ? "Not set up. Closures still run, but if the database were restored from an older backup, families deleted since that backup could come back with no record that they asked to go. WLA must choose where the ledger is kept (OPEN-30)."
             : ledger === "misconfigured"
-              ? "Set up incorrectly: one of its two settings is missing or the key is invalid. Closures are paused, and nothing is deleted, until it is fixed."
+              ? "Set up incorrectly: a second-project URL, server token or encryption key is missing or invalid. Closures are paused, and nothing is deleted, until it is fixed."
               : waiting > 0
                 ? `${waiting} ${waiting === 1 ? "entry is" : "entries are"} waiting to be copied, the oldest from ${date(ledgerStatus?.oldest_unshipped ?? null)}. Closures delete nothing until their request is copied.`
                 : "Up to date. Every closure, hold and removal is copied before anything is deleted."}
