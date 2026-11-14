@@ -99,48 +99,31 @@ The database's daily run needs pg_cron enabled on the hosted project. The migrat
 
 **The safeguard: a deletion ledger outside the database (D-157).**
 - Every closure request, completed closure, hold placed, renewed or released, and Mission Board removal is written, in the same transaction, to an outbox in the database (`privacy_ledger_outbox`).
-- The server copies each entry to the **ledger**: a file kept somewhere a database restore doesn't touch. Each entry is encrypted, numbered and chained to the one before with a keyed signature, so it can't be read without the key, and an edit, removal or reordering is detected.
+- The server copies each entry to immutable segments in the private `wla-privacy-ledger` Storage bucket in a **separate Supabase project**. Existing AES-256-GCM entries remain numbered and chained with keyed HMAC-SHA256; segment ranges and predecessor hashes are checked too.
 - It holds **ids and dates only**: which deletion, which account or child (by id), which hold, when. Never a name, email, hold reason or anything a child wrote.
 - **A closure deletes nothing until its request is in the ledger.** If the ledger can't be written, the closure waits, shows "ledger" as its step on `/admin/privacy`, and is retried.
 - **Holds travel in the ledger too.** A restore brings back the holds placed after the backup *before* it takes on the closures they cover, so a held family is never deleted by mistake. Releasing a hold is recorded the same way.
 
-**Settings.** `PRIVACY_LEDGER_DIR` (where the file is kept) and `PRIVACY_LEDGER_KEY` (32 random bytes: `openssl rand -base64 32`), both on the server. **Where the ledger is kept in production is not decided (OPEN-30)**: a directory works locally, but Vercel has no lasting disk. Until it is set, closures run as before, nothing protects against restoring an older backup, and `/admin/privacy` says so. With only one of the two set, or a bad key, closures pause.
+**Production settings.** Set `PRIVACY_LEDGER_URL`, `PRIVACY_LEDGER_TOKEN` and the existing `PRIVACY_LEDGER_KEY` in Vercel's server-side environment. The URL and token belong to the second project. Preserve the existing 32-byte Base64 key. Missing or invalid production settings make closures fail closed. `PRIVACY_LEDGER_DIR` remains available only for local development and simulations.
 
-**Restore procedure.** Follow every step before anyone can use the restored Academy.
-1. **Restore into a separate, closed environment**, never straight over the live service. Keep the Academy offline, or pointed elsewhere, until step 9.
-2. **Get the ledger file and its key** from where WLA keeps them (OPEN-30). Copy the file; never edit it.
-3. **Verify it:**
-   `PRIVACY_LEDGER_KEY=… node scripts/privacy-ledger.ts verify deletion-ledger.jsonl --out events.json`
-   It checks every entry's numbering, chain and encryption. On any fault it prints **"LEDGER INVALID … Do not reopen"** and writes nothing. Then stop: deletion status is unknown. Find the right copy of the ledger; don't reopen without it.
-4. **Copy anything the backup recorded but hadn't sent yet.** Use `privacy_ledger_pending()` in the restored database, then `node scripts/privacy-ledger.ts append`, then `privacy_ledger_mark_shipped(…)`. There is usually nothing to copy.
-5. **Replay it**, as the database owner: `select privacy_ledger_replay('<contents of events.json>'::jsonb);`
-   It refuses, and changes nothing, if the ledger doesn't contain the last entry the backup knew of (a cut-short or wrong ledger), or misses a closure or hold the backup holds. Otherwise, in order, it:
-   - recreates holds;
-   - recreates the closure requests the backup is missing, with their original ids, and reopens completed ones whose family has come back;
-   - removes Board contributions that had been removed.
+**Second-project setup.** Create the separate Supabase project, then create a Storage bucket named `wla-privacy-ledger` with **Public bucket** disabled. Do not add policies for `anon` or `authenticated`; do not create signed URLs. Use that project's server-side service token only in Vercel and the restore operator environment. Confirm the main project's URL is not being used for `PRIVACY_LEDGER_URL`. The application creates objects only under `v1/segments/` and never overwrites one.
 
-   Each closing family is at once unusable again: codes and sessions end, nothing is on the Board, and sign-in is blocked where the database allows it.
-6. **Run the server's follow-up** against the restored environment: `GET /api/cron/privacy` with `CRON_SECRET`, or "Retry everything open" on `/admin/privacy`. That copies anything new to the ledger, blocks sign-in, then:
-   - removes stored files through the Storage API;
-   - deletes the data and the auth users;
-   - sweeps orphaned evidence files.
+The shipper takes a fenced single-writer lease from the main database. Segment names encode their sequence range, and uploads use `upsert: false`. After upload, the shipper downloads and verifies the complete segment chain before checkpointing. If upload succeeds but checkpointing fails, the next worker verifies the existing segment and checkpoints those same event IDs without appending duplicates.
 
-   **A database restore doesn't restore or delete Storage files.** Supabase backs them up separately, if at all (OPEN-27). The follow-up removes every file the restored records point to, whether or not it still exists.
-7. **Check:** `select * from privacy_restore_verify('<events.json>'::jsonb);` must return **no rows**. Each row names a problem:
-   - `subject_still_present`: a deleted family or child is back;
-   - `deletion_not_finished`: a closure still to finish;
-   - `held_child_usable` or `held_content_visible`: a held family can still be used, or their content seen;
-   - `hold_missing`: a hold in the ledger isn't in force;
-   - `board_contribution_returned`: a removed contribution is back;
-   - `files_remain`: a deleted child's files are still in Storage's records.
+**Initial migration of the current file.** Apply the new fenced-lease migration to the main project before importing; the older application then fails closed while it lacks the new fenced RPC. Configure both projects' credentials and the existing key in a protected operator shell, then run `node scripts/privacy-ledger.ts import-local <path-to-existing-deletion-ledger.jsonl>`. This takes the writer lease, verifies the source, confirms the main database checkpoint is present in its history, uploads the original encrypted lines into immutable segments, and verifies the destination. It does not alter the source file. Deploy the new application promptly, then confirm the queue drains. Keep the source file as a protected recovery copy until an isolated restore drill passes; do not generate a replacement key.
 
-   Fix any problem and repeat steps 6–7.
-8. **Check** `/admin/privacy`:
-   - nothing open except closures under a hold;
-   - held closures still held;
-   - the ledger "Up to date".
-9. **Only then reconnect** the Academy to users.
-10. Record the restore: when, which backup, and the replay's counts.
+**Restore procedure.** Keep the restored Academy closed until every check passes.
+1. Restore the backup into an isolated main Supabase project. Keep production traffic disconnected. Apply the reviewed migrations needed by this application version to the isolated project.
+2. Set the restore operator environment to the isolated main project (`NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`) and the external ledger project (`PRIVACY_LEDGER_URL`, `PRIVACY_LEDGER_TOKEN`, existing `PRIVACY_LEDGER_KEY`). Do not use a local ledger file.
+3. Retrieve and verify the external ledger: `node scripts/privacy-ledger.ts verify`. Any retrieval, sequence, chain, decryption or key error means stop. Do not reopen.
+4. Replay into the isolated restored database: `node scripts/privacy-ledger.ts restore`. The CLI downloads and verifies segments again, then calls `privacy_ledger_replay`. It refuses a chain that does not extend the backup checkpoint or omits closure/hold history.
+5. Run the normal closure follow-up repeatedly against the isolated environment: `GET /api/cron/privacy` with `CRON_SECRET`, or **Retry everything open** on `/admin/privacy`. Confirm files, data and auth users are removed, and that active holds remain in force. A main database restore does not restore or delete Storage files; this follow-up checks/removes listed evidence files.
+6. Verify with `node scripts/privacy-ledger.ts verify-restore`. It must report no problems. If it reports `subject_still_present`, `deletion_not_finished`, `held_child_usable`, `held_content_visible`, `hold_missing`, `board_contribution_returned`, or `files_remain`, keep the Academy closed, fix the cause, and repeat steps 5–6.
+7. Check `/admin/privacy`: no open deletions except those under active holds, held closures remain held, and the ledger is up to date.
+8. Reopen only after all checks pass and the responsible operator approves.
+9. Record the backup, restore time, replay counts, verification result and approver.
+
+For a restore drill, use an isolated copy of the ledger bucket so shipping any unshipped backup outbox rows cannot alter production ledger objects. A local simulation or isolated drill is not proof of a real production restore.
 
 The older in-database safeguard, `privacy_reapply_deletions()`, now only reopens completed closures whose family has come back, for step 6 to finish. It is enough only for a backup taken *after* every deletion. It no longer deletes rows itself, which could leave a sign-in without its profile (S1).
 

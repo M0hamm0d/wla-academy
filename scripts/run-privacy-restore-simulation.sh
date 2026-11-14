@@ -45,9 +45,13 @@ trap finish EXIT
 # The server's two steps, stood in for: copy the outbox to the ledger file, and
 # finish a closure (Storage API removal and auth deletion as row deletions).
 ship() {
+  local owner=$(uuidgen)
+  local fence=$(q -c "select fencing_token from privacy_ledger_acquire_lease('$owner', 120)")
+  [ -n "$fence" ] || { echo "could not acquire ledger writer lease" >&2; return 1; }
   q -c "select coalesce(json_agg(json_build_object('event_id', event_id, 'event', event, 'payload', payload, 'created_at', created_at) order by seq), '[]') from privacy_ledger_pending(1000)" > $W/outbox.json
   local head=$(node "$R/scripts/privacy-ledger.ts" append "$LEDGER" --events $W/outbox.json)
-  qv "select privacy_ledger_mark_shipped(array(select jsonb_array_elements_text((:'head')::jsonb->'event_ids'))::uuid[], ((:'head')::jsonb->>'seq')::bigint, (:'head')::jsonb->>'chain')" -v head="$head"
+  qv "select privacy_ledger_mark_shipped(array(select jsonb_array_elements_text((:'head')::jsonb->'event_ids'))::uuid[], ((:'head')::jsonb->>'seq')::bigint, (:'head')::jsonb->>'chain', :'fence'::bigint, :'owner'::uuid)" -v head="$head" -v fence="$fence" -v owner="$owner"
+  q -c "select privacy_ledger_release_lease('$owner', $fence)" >/dev/null
 }
 server_sql() { cat <<'SQL'
 create schema if not exists sim;

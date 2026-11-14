@@ -293,16 +293,13 @@ The admin Reviews page (PR #2) reads a `reviews` table that exists only on the h
 
 **Until then:** `20261103090000` applies its policies only where the table exists, and the Reviews page works only against the hosted database.
 
-## OPEN-30 — Where the deletion ledger is kept · 🔴 needs WLA · D-157
+## OPEN-30 — Separate-project privacy ledger setup · implementation complete, operator setup required
 
-Deletions are now written to a ledger that must survive a database restore, so it can't live in the database, or in this project's Storage (whose records are in the database). The code writes it to a directory (`PRIVACY_LEDGER_DIR`) under a key (`PRIVACY_LEDGER_KEY`). That works locally and on any server with a lasting disk. **Vercel has no lasting disk**, so for the Academy as intended, WLA must choose a separate, access-controlled place to keep it, for example a storage bucket in a different account with versioning turned on. Then a small sink for it is added beside the directory one.
+The application now writes encrypted immutable segments to the private `wla-privacy-ledger` bucket in a second Supabase project. Production fails closed until `PRIVACY_LEDGER_URL`, `PRIVACY_LEDGER_TOKEN` and the existing `PRIVACY_LEDGER_KEY` are configured. The main-project migration adds a fenced single-writer lease. Vercel does not need persistent disk.
 
-**Decide:**
-1. Where the ledger is kept, and who can read it: the restore operator only.
-2. Who holds `PRIVACY_LEDGER_KEY`, and where a copy is kept for a restore (not in the database, and not only in Vercel).
-3. How long ledger entries are kept. They are ids and dates only, and are needed for as long as any backup that predates them can be restored.
+**Operator setup remains:** create the private bucket in the second project, configure its server token only in Vercel and the restore operator environment, preserve the existing key, apply the new main-project migration through the normal reviewed deployment process, and complete an isolated restore drill before production cutover.
 
-**Until then:** closures run as before, and `/admin/privacy` warns that restoring an older backup could bring deleted families back. Do not restore a production backup without the ledger: the procedure in `docs/PRIVACY-OPERATIONS.md` §3 refuses to finish without one.
+Entries contain encrypted ids and dates. Retain the bucket and key for as long as any database backup predating those entries can be restored.
 
 ## OPEN-29 — Terms & Conditions to align the checkout statements with · 🔴 needs WLA · D-152
 

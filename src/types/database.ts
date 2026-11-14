@@ -1181,8 +1181,20 @@ export type Database = {
         Returns: { seq: number; event_id: string; event: string; payload: Json; created_at: string }[];
       };
       privacy_ledger_mark_shipped: {
-        Args: { p_event_ids: string[]; p_ledger_seq: number; p_chain: string };
+        Args: { p_event_ids: string[]; p_ledger_seq: number; p_chain: string; p_fencing_token: number; p_owner: string };
         Returns: undefined;
+      };
+      privacy_ledger_acquire_lease: {
+        Args: { p_owner: string; p_lease_seconds?: number };
+        Returns: { fencing_token: number; expires_at: string }[];
+      };
+      privacy_ledger_release_lease: {
+        Args: { p_owner: string; p_fencing_token: number };
+        Returns: boolean;
+      };
+      privacy_ledger_checkpoint: {
+        Args: Record<string, never>;
+        Returns: { ledger_seq: number; chain: string }[];
       };
       privacy_ledger_request_shipped: { Args: { p_deletion: string }; Returns: boolean };
       admin_privacy_ledger_status: {
