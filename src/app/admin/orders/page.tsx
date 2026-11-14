@@ -10,18 +10,6 @@ const GIFT_STATUS = {
   redeemed: "Redeemed",
 } as const;
 
-/**
- * ADMIN ORDERS — brief §21, and its constraint: an admin must not be able to
- * fabricate a payment record.
- *
- * This surface is READ ONLY and has no companion write action anywhere in the
- * codebase. Entitlement remains server-controlled: it is written by the Stripe
- * webhook against a verified signature, which also stamps the payment on the
- * order (D-148), so `state` is a recorded fact no administrator can edit. An
- * order from a closed account stays as a financial record, without anyone's
- * name or address. "Consent" and "Confirmation" show that both checkout
- * statements were recorded and the confirmation email left (D-152).
- */
 export default async function AdminOrdersPage() {
   const [orders, gifts] = await Promise.all([adminOrders(), adminGifts()]);
   const date = (value: string | null) =>
