@@ -31,7 +31,6 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # env files (can opt-in for committing if needed)
-.env*
 
 # vercel
 .vercel
@@ -51,3 +50,4 @@ scripts/browser/acceptance/*.json
 # session cookies written by scripts/browser/acceptance/cdp.mjs (parentCookies)
 # into the directory it is run from — they hold live auth tokens
 ck-*.json
+config.bat
