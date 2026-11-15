@@ -20,8 +20,8 @@ begin
   select * into v from private.privacy_ledger_writer_lease where id for update;
   if v.expires_at > clock_timestamp() and v.owner is distinct from p_owner then return; end if;
   if v.owner is distinct from p_owner or v.expires_at <= clock_timestamp() then
-    update private.privacy_ledger_writer_lease
-       set owner = p_owner, fencing_token = fencing_token + 1,
+    update private.privacy_ledger_writer_lease as lease
+       set owner = p_owner, fencing_token = lease.fencing_token + 1,
            expires_at = clock_timestamp() + make_interval(secs => greatest(15, least(coalesce(p_lease_seconds, 120), 300)))
      where id returning * into v;
   else

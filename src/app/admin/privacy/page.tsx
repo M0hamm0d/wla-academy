@@ -23,7 +23,12 @@ const STATUS: Record<string, string> = {
 
 export default async function PrivacyAdminPage() {
   const { supabase } = await requireAdmin();
-  const [{ data: deletions }, { data: holds }, { data: runs }, { data: ledgerRows }] = await Promise.all([
+  const [
+    { data: deletions },
+    { data: holds },
+    { data: runs },
+    { data: ledgerRows, error: ledgerStatusError },
+  ] = await Promise.all([
     supabase.rpc("admin_privacy_deletions", {}),
     supabase.rpc("admin_retention_holds", {}),
     supabase.rpc("admin_retention_runs", { p_limit: 14 }),
@@ -41,9 +46,7 @@ export default async function PrivacyAdminPage() {
       intro="Account closures, retention holds and the daily retention run. Ids, dates and counts only."
     >
       <section aria-labelledby="closures">
-        <h2 id="closures" className="text-[length:var(--text-h3)]">
-          Closures and deletions ({open.length} open{overdue ? `, ${overdue} overdue` : ""})
-        </h2>
+        <h2 id="closures" className="text-[length:var(--text-h3)]">Closures and deletions ({open.length} open{overdue ? `, ${overdue} overdue` : ""})</h2>
         <form action={adminRetryClosuresAction} className="mt-[var(--space-s)]">
           <Button type="submit" variant="secondary">Retry everything open</Button>
         </form>
@@ -83,18 +86,22 @@ export default async function PrivacyAdminPage() {
       </section>
 
       <section aria-labelledby="ledger" className="mt-[var(--space-2xl)]">
-        <h2 id="ledger" className="text-[length:var(--text-h3)]">Deletion ledger outside the database</h2>
+        <h2 id="ledger" className="text-[length:var(--text-h3)]">A separate record of privacy actions</h2>
         <p className="wla-measure mt-[var(--space-s)]">
-          {ledger === "unconfigured"
-            ? "Not set up. Closures still run, but if the database were restored from an older backup, families deleted since that backup could come back with no record that they asked to go. WLA must choose where the ledger is kept (OPEN-30)."
-            : ledger === "misconfigured"
-              ? "Set up incorrectly: a second-project URL, server token or encryption key is missing or invalid. Closures are paused, and nothing is deleted, until it is fixed."
-              : waiting > 0
-                ? `${waiting} ${waiting === 1 ? "entry is" : "entries are"} waiting to be copied, the oldest from ${date(ledgerStatus?.oldest_unshipped ?? null)}. Closures delete nothing until their request is copied.`
-                : "Up to date. Every closure, hold and removal is copied before anything is deleted."}
+          {ledgerStatusError
+            ? "We couldn't check whether privacy actions have been safely copied. Please refresh this page or contact technical support. Do not treat this as up to date."
+            : ledger === "unconfigured"
+              ? "This protection isn't set up. If the Academy had to use an older database backup, it might not know which accounts or child profiles had already been deleted. In production, deletion requests are recorded, but the data removal waits until this protection is set up."
+              : ledger === "misconfigured"
+                ? "This protection isn't working because some setup details are missing or invalid. Deletion requests are recorded and the affected account or child is stopped from using the Academy, but the data removal waits until the problem is fixed."
+                : waiting > 0
+                  ? `${waiting} privacy ${waiting === 1 ? "update is" : "updates are"} waiting to be copied to the separate protected record. These updates can include deletion requests, holds, or Mission Board removals; they do not necessarily represent the same number of accounts being deleted. The oldest has been waiting since ${date(ledgerStatus?.oldest_unshipped ?? null)}. An account's data is not removed until its deletion request has been copied.`
+                  : "All privacy updates currently waiting have been copied to the separate protected record. This helps the Academy remember what must stay deleted if an older database backup is restored."}
         </p>
         <p className="wla-measure mt-[var(--space-xs)] text-[length:var(--text-small)] text-[var(--color-text-muted)]">
-          After any restore, follow the restore procedure before reopening the Academy (Privacy operations, §3).
+          If the Academy is restored from a backup, keep it closed until this
+          separate record has been checked and any required deletions have been
+          carried out again.
         </p>
       </section>
 
@@ -149,17 +156,51 @@ export default async function PrivacyAdminPage() {
             No run recorded yet. It runs daily at 03:15 UTC where pg_cron is enabled.
           </p>
         ) : (
-          <ul className="mt-[var(--space-s)] flex flex-col gap-[var(--space-xs)] text-[length:var(--text-small)]">
-            {(runs ?? []).map((r) => (
-              <li key={r.ran_at}>
-                <span className="font-medium">{new Date(r.ran_at).toLocaleString("en-GB")}</span>{" "}
-                {Object.entries((r.results ?? {}) as Record<string, unknown>)
-                  .map(([k, v]) => `${k.replaceAll("_", " ")}: ${String(v)}`)
-                  .join(" · ")}
-                {r.error ? ` · error: ${r.error}` : ""}
-              </li>
-            ))}
-          </ul>
+          <div
+            role="region"
+            aria-label="Retention run history"
+            tabIndex={0}
+            className="scrollbar-hidden mt-[var(--space-s)] max-h-[32rem] overflow-y-auto overscroll-contain border-y border-[var(--color-border)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-focus)]"
+          >
+            <ul className="text-[length:var(--text-small)]">
+              {(runs ?? []).map((r) => {
+                const results = Object.entries((r.results ?? {}) as Record<string, unknown>);
+                return (
+                  <li key={r.ran_at} className="border-t border-[var(--color-border)] py-[var(--space-m)]">
+                    <h3 className="font-medium">
+                      Run on {new Date(r.ran_at).toLocaleString("en-GB")}
+                    </h3>
+                    {results.length > 0 ? (
+                      <dl className="mt-[var(--space-s)] grid gap-x-[var(--space-m)] gap-y-[var(--space-xs)] sm:grid-cols-[minmax(12rem,0.7fr)_minmax(0,1.3fr)]">
+                        {results.map(([key, value]) => (
+                          <div key={key} className="contents">
+                            <dt className="text-[var(--color-text-muted)]">
+                              {key.replaceAll("_", " ")}
+                            </dt>
+                            <dd className="min-w-0 whitespace-pre-wrap break-words">
+                              {typeof value === "string"
+                                ? value
+                                : (JSON.stringify(value, null, 2) ?? String(value))}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : (
+                      <p className="mt-[var(--space-s)] text-[var(--color-text-muted)]">
+                        No result details recorded.
+                      </p>
+                    )}
+                    {r.error && (
+                      <p className="mt-[var(--space-s)] whitespace-pre-wrap break-words">
+                        <span className="font-medium">Run error: </span>
+                        {r.error}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
         )}
       </section>
     </AdminPage>
