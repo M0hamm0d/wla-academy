@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { requireAdmin, AccessError } from "@/lib/permissions";
 import { logAccessDenied } from "@/lib/observability/logger";
 import { AppShell, type NavItem } from "@/components/app-shell/app-shell";
+import { signOutAction } from "@/features/auth/actions";
 import {
   IconOverview, IconMission, IconBuilder, IconParents, IconChildren,
   IconOrders, IconActivity, IconAnalytics, IconSettings, IconHelp, IconLogout,
@@ -76,6 +77,7 @@ export default async function AdminLayout({
       nav={nav}
       utility={utility}
       identity={{ label: profile.email, meta: "Admin" }}
+      logoutAction={signOutAction}
     >
       {children}
     </AppShell>

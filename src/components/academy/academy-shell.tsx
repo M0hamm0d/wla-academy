@@ -9,6 +9,8 @@ import {
 } from "@/components/app-shell/icons";
 import { ProfileSwitcher } from "@/components/profile/profile-switcher";
 import { resolveAcademyActor } from "@/features/academy/actor";
+import { signOutAction } from "@/features/auth/actions";
+import { childLogoutAction } from "@/features/child-auth/actions";
 import { listChildren } from "@/features/children/queries";
 import { getActiveChildId } from "@/features/children/active-child";
 
@@ -53,6 +55,8 @@ export async function AcademyShell({
         nav={nav}
         utility={utility}
         identity={{ label: actor.session.displayName }}
+        logoutAction={childLogoutAction}
+        logoutMessage="You’ll need your child code to come back in."
       >
         {children}
       </AppShell>
@@ -88,6 +92,7 @@ export async function AcademyShell({
     <AppShell
       nav={nav}
       utility={utility}
+      logoutAction={signOutAction}
       identity={
         hasSwitcher
           ? {

@@ -3,6 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ReactNode } from "react";
+import { Dialog } from "@/components/admin/dialog";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 /**
@@ -49,36 +51,56 @@ function NavList({
   items,
   pathname,
   onNavigate,
+  onLogout,
 }: {
   items: NavItem[];
   pathname: string;
   onNavigate?: () => void;
+  onLogout?: () => void;
 }) {
   return (
     <ul className="flex flex-col gap-[2px]">
       {items.map((item) => {
         const active = isActive(pathname, item);
+        const isLogoutItem = item.href === "/logout" || item.href === "/child/logout";
         return (
           <li key={item.href}>
-            <Link
-              href={item.href}
-              onClick={onNavigate}
-              // aria-current is what actually announces the active item.
-              // Colour and weight alone would not (Architecture §20).
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "flex min-h-[var(--target-min)] items-center gap-[var(--space-s)]",
-                "rounded-[var(--radius-control)] px-[var(--space-m)] py-[10px]",
-                "text-[length:var(--text-label)]",
-                "transition-colors duration-[var(--duration-fast)]",
-                active
-                  ? "bg-[var(--color-surface-sage)] font-medium text-[color:var(--color-text)]"
-                  : "text-[color:var(--color-text-muted)] hover:bg-[var(--color-surface-raised)] hover:text-[color:var(--color-text)]",
-              )}
-            >
-              {item.icon}
-              <span>{item.label}</span>
-            </Link>
+            {isLogoutItem && onLogout ? (
+              <button
+                type="button"
+                onClick={() => { onNavigate?.(); onLogout(); }}
+                className={cn(
+                  "flex min-h-[var(--target-min)] w-full items-center gap-[var(--space-s)]",
+                  "rounded-[var(--radius-control)] px-[var(--space-m)] py-[10px]",
+                  "text-left text-[length:var(--text-label)]",
+                  "transition-colors duration-[var(--duration-fast)]",
+                  "text-[color:var(--color-text-muted)] hover:bg-[var(--color-surface-raised)] hover:text-[color:var(--color-text)]",
+                )}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </button>
+            ) : (
+              <Link
+                href={item.href}
+                onClick={onNavigate}
+                // aria-current is what actually announces the active item.
+                // Colour and weight alone would not (Architecture §20).
+                aria-current={active ? "page" : undefined}
+                className={cn(
+                  "flex min-h-[var(--target-min)] items-center gap-[var(--space-s)]",
+                  "rounded-[var(--radius-control)] px-[var(--space-m)] py-[10px]",
+                  "text-[length:var(--text-label)]",
+                  "transition-colors duration-[var(--duration-fast)]",
+                  active
+                    ? "bg-[var(--color-surface-sage)] font-medium text-[color:var(--color-text)]"
+                    : "text-[color:var(--color-text-muted)] hover:bg-[var(--color-surface-raised)] hover:text-[color:var(--color-text)]",
+                )}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </Link>
+            )}
           </li>
         );
       })}
@@ -90,15 +112,20 @@ export function AppShell({
   nav,
   utility,
   identity,
+  logoutAction,
+  logoutMessage,
   children,
 }: {
   nav: NavItem[];
   utility?: NavItem[];
   identity?: ShellIdentity;
+  logoutAction?: () => Promise<void>;
+  logoutMessage?: string;
   children: ReactNode;
 }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
   const close = () => setOpen(false);
 
   return (
@@ -164,7 +191,12 @@ export function AppShell({
           <NavList items={nav} pathname={pathname} onNavigate={close} />
           {utility && utility.length > 0 && (
             <div className="mt-[var(--space-l)] border-t border-[var(--color-border)] pt-[var(--space-m)]">
-              <NavList items={utility} pathname={pathname} onNavigate={close} />
+              <NavList
+                items={utility}
+                pathname={pathname}
+                onNavigate={close}
+                onLogout={logoutAction ? () => setLogoutOpen(true) : undefined}
+              />
             </div>
           )}
         </nav>
@@ -172,6 +204,24 @@ export function AppShell({
         {/* ------------------------------------------------------- content */}
         <div className="min-w-0 flex-1">{children}</div>
       </div>
+      {logoutAction && (
+        <Dialog
+          open={logoutOpen}
+          onClose={() => setLogoutOpen(false)}
+          title="Log out?"
+          role="alertdialog"
+        >
+          <p className="text-[color:var(--color-text-muted)]">
+            {logoutMessage ?? "You’ll need to sign in again to manage your family."}
+          </p>
+          <form action={logoutAction} className="mt-[var(--space-l)] flex justify-end gap-[var(--space-s)]">
+            <Button type="button" variant="secondary" onClick={() => setLogoutOpen(false)}>
+              Cancel
+            </Button>
+            <Button type="submit">Log out</Button>
+          </form>
+        </Dialog>
+      )}
     </div>
   );
 }
