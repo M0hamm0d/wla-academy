@@ -21,7 +21,7 @@ export default function AuthLayout({
         </Link>
       </header>
       <main className="wla-container">
-        <div className="mx-auto w-full max-w-[26rem] py-[var(--space-2xl)]">
+        <div className="mx-auto w-full max-w-[26rem] py-[var(--space-xl)]">
           {children}
         </div>
       </main>

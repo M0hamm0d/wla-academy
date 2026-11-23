@@ -8,7 +8,13 @@ import { PasswordInput } from "@/components/auth/password-input";
 import { signInAction } from "@/features/auth/actions";
 import { emptyFormState } from "@/features/auth/schemas";
 
-export function SignInForm({ next }: { next?: string }) {
+export function SignInForm({
+  next,
+  showCreateAccount = true,
+}: {
+  next?: string;
+  showCreateAccount?: boolean;
+}) {
   const [state, formAction, isPending] = useActionState(
     signInAction,
     emptyFormState,
@@ -60,15 +66,19 @@ export function SignInForm({ next }: { next?: string }) {
         >
           Forgotten your password?
         </Link>
-        <p className="text-[var(--color-text-muted)]">
-          No account yet?{" "}
-          <Link
-            href={next ? `/signup?next=${encodeURIComponent(next)}` : "/signup"}
-            className="text-[var(--color-text)] underline decoration-[var(--color-border-strong)] underline-offset-4"
-          >
-            Create one
-          </Link>
-        </p>
+        {showCreateAccount && (
+          <p className="text-[var(--color-text-muted)]">
+            No account yet?{" "}
+            <Link
+              href={
+                next ? `/signup?next=${encodeURIComponent(next)}` : "/signup"
+              }
+              className="text-[var(--color-text)] underline decoration-[var(--color-border-strong)] underline-offset-4"
+            >
+              Create one
+            </Link>
+          </p>
+        )}
       </div>
     </form>
   );
