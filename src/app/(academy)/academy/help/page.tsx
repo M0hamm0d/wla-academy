@@ -11,24 +11,32 @@ export default function HelpPage() {
           <section>
             <h2 className="text-[length:var(--text-h3)]">I can&rsquo;t open a mission</h2>
             <p className="mt-[var(--space-xs)] text-[var(--color-text-muted)]">
-              Missions belong to one child. Check the name in the top right is
-              the right one.
+              Check that the correct child profile is selected and that the 
+              mission appears in My Missions.
             </p>
           </section>
           <section>
-            <h2 className="text-[length:var(--text-h3)]">My child code doesn&rsquo;t work</h2>
+            <h2 className="text-[length:var(--text-h3)]">My Child Access Code doesn&rsquo;t work</h2>
             <p className="mt-[var(--space-xs)] text-[var(--color-text-muted)]">
-              Codes can be replaced. A parent can make a new one from Account →
-              the child&rsquo;s page. Making a new code stops the old one working.
+              A parent can create a new code from the child's profile in 
+              Account. The previous code will stop working. 
             </p>
           </section>
           <section>
-            <h2 className="text-[length:var(--text-h3)]">Where did my work go?</h2>
+            <h2 className="text-[length:var(--text-h3)]">How do I continue a mission?</h2>
             <p className="mt-[var(--space-xs)] text-[var(--color-text-muted)]">
-              Missions save as you go. Leaving and coming back never loses your
-              place.
+              In My Missions, find your mission and select <b>Continue</b>. Your 
+              saved Academy progress should be available.
             </p>
           </section>
+          <section>
+            <h2 className="text-[length:var(--text-h3)]">Need more help?</h2>
+            <p className="mt-[var(--space-xs)] text-[var(--color-text-muted)]">
+              If your progress is missing or you have trouble with access, 
+              resources, instructions, or safety and privacy, <a href="https://wla-xi.vercel.app/contact" className="text-[var(--color-text-link)] underline">contact WLA.</a> 
+            </p> <a href="https://wla-xi.vercel.app/contact" target="_blank" rel="noopener noreferrer"></a>
+          </section>
+
         </div>
       </main>
     </AcademyShell>

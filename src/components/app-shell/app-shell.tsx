@@ -211,9 +211,6 @@ export function AppShell({
           title="Log out?"
           role="alertdialog"
         >
-          <p className="text-[color:var(--color-text-muted)]">
-            {logoutMessage ?? "You’ll need to sign in again to manage your family."}
-          </p>
           <form action={logoutAction} className="mt-[var(--space-l)] flex justify-end gap-[var(--space-s)]">
             <Button type="button" variant="secondary" onClick={() => setLogoutOpen(false)}>
               Cancel

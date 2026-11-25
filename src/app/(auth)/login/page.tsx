@@ -63,12 +63,12 @@ export default async function LoginPage({
             </ButtonLink>
           </div>
 
-          <div className="mt-[var(--space-l)] border-t border-[var(--color-border)] pt-[var(--space-l)] text-center">
+          <div className="mt-[var(--space-l)] border-t border-[var(--color-border)] pt-[var(--space-s)] text-center">
             <p className="text-[var(--color-text-muted)]">New to WLA?</p>
             <ButtonLink
               href="https://wla-xi.vercel.app/missions"
               variant="text"
-              className="mt-[var(--space-s)] w-full justify-center"
+              className="w-full justify-center"
             >
               Explore Missions
             </ButtonLink>
