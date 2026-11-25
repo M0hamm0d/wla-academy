@@ -85,7 +85,7 @@ export default async function PrivacyAdminPage() {
         )}
       </section>
 
-      <section aria-labelledby="ledger" className="mt-[var(--space-2xl)]">
+      {/* <section aria-labelledby="ledger" className="mt-[var(--space-2xl)]">
         <h2 id="ledger" className="text-[length:var(--text-h3)]">A separate record of privacy actions</h2>
         <p className="wla-measure mt-[var(--space-s)]">
           {ledgerStatusError
@@ -103,7 +103,7 @@ export default async function PrivacyAdminPage() {
           separate record has been checked and any required deletions have been
           carried out again.
         </p>
-      </section>
+      </section> */}
 
       <section aria-labelledby="erasure" className="mt-[var(--space-2xl)]">
         <h2 id="erasure" className="text-[length:var(--text-h3)]">Close an account for an erasure request</h2>
