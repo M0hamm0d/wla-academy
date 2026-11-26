@@ -2,43 +2,23 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState, type ReactNode } from "react";
+import { useActionState, useState, type ReactNode } from "react";
 import { Dialog } from "@/components/admin/dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import Image from "next/image";
 
-/**
- * THE ACADEMY APPLICATION SHELL — LMS brief §3, §26, §27.
- *
- * Structure follows the reference sketches: a persistent left sidebar, the
- * wordmark top-left, identity context top-right, content to the right of the
- * nav. The LOOK is WLA's own — warm cream, Fraunces for the wordmark, Karla
- * for navigation, restrained radii, olive reserved for the active item.
- *
- * DELIBERATELY NOT A SAAS ADMIN TEMPLATE (§26): no dense icon rail, no
- * collapsed-to-glyphs mode, no dark chrome, no cards for navigation. The
- * sidebar reads as a list of places, because that is what it is.
- *
- * RESPONSIVE (§27): the sidebar is a real sidebar from `lg` up and a
- * disclosure below it. It is NOT forced onto narrow screens — on mobile the
- * nav collapses behind one button and the content takes the full width, so a
- * mission card never has to compete with chrome for space.
- */
 
 export type NavItem = {
   href: string;
   label: string;
   icon: ReactNode;
-  /** Match this item for any nested path beneath it, not just an exact hit. */
   prefix?: boolean;
 };
 
 export type ShellIdentity = {
-  /** What is shown in the top-right chip. */
   label: string;
-  /** Optional secondary line, e.g. "Parent" or "Admin". */
   meta?: string;
-  /** Rendered beside the chip — the child switcher, when there is one. */
   action?: ReactNode;
 };
 
@@ -126,6 +106,13 @@ export function AppShell({
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [, logoutFormAction, isLoggingOut] = useActionState(
+    async (_previousState: null, _formData: FormData): Promise<null> => {
+      if (logoutAction) await logoutAction();
+      return null;
+    },
+    null,
+  );
   const close = () => setOpen(false);
 
   return (
@@ -155,7 +142,7 @@ export function AppShell({
             href="/academy/my-missions"
             className="font-[family-name:var(--font-serif)] text-[length:var(--text-h3)] text-[color:var(--color-text)]"
           >
-            WLA Academy
+            <Image src="/logo-transparent.png" alt="Wordmark: WLA" width={120} height={32} priority />
           </Link>
 
           {identity && (
@@ -207,15 +194,19 @@ export function AppShell({
       {logoutAction && (
         <Dialog
           open={logoutOpen}
-          onClose={() => setLogoutOpen(false)}
+          onClose={() => {
+            if (!isLoggingOut) setLogoutOpen(false);
+          }}
           title="Log out?"
           role="alertdialog"
         >
-          <form action={logoutAction} className="mt-[var(--space-l)] flex justify-end gap-[var(--space-s)]">
-            <Button type="button" variant="secondary" onClick={() => setLogoutOpen(false)}>
+          <form action={logoutFormAction} className="mt-[var(--space-l)] flex justify-end gap-[var(--space-s)]">
+            <Button type="button" variant="secondary" disabled={isLoggingOut} onClick={() => setLogoutOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit">Log out</Button>
+            <Button type="submit" isLoading={isLoggingOut} loadingLabel="Logging out…">
+              Log out
+            </Button>
           </form>
         </Dialog>
       )}

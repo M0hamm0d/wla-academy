@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("next/navigation", () => ({ usePathname: () => "/admin" }));
@@ -61,6 +61,27 @@ describe("shell logout confirmation", () => {
     );
 
     expect(logoutAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a pending state and prevents cancelling while signing out", async () => {
+    let finishLogout!: () => void;
+    const logoutAction = vi.fn(
+      () => new Promise<void>((resolve) => { finishLogout = resolve; }),
+    );
+    renderShell(logoutAction);
+
+    fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Log out?" });
+    fireEvent.submit(within(dialog).getByRole("button", { name: "Log out" }).closest("form")!);
+
+    expect(await within(dialog).findByRole("button", { name: "Logging out…" })).toBeDefined();
+    expect((within(dialog).getByRole("button", { name: "Cancel" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Logging out…" }).getAttribute("aria-busy")).toBe("true");
+
+    finishLogout();
+    await waitFor(() => {
+      expect((within(dialog).getByRole("button", { name: "Log out" }) as HTMLButtonElement).disabled).toBe(false);
+    });
   });
 
   it("uses the supplied child sign-out action and message", () => {
