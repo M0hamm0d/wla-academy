@@ -17,11 +17,11 @@ export default function AuthLayout({
           href="/"
           className="font-[family-name:var(--font-serif)] text-[length:var(--text-h3)]"
         >
-          Within Lab
+          Within Lab Academy
         </Link>
       </header>
       <main className="wla-container">
-        <div className="mx-auto w-full max-w-[26rem] py-[var(--space-xl)]">
+        <div className="mx-auto w-full max-w-[26rem] pb-[var(--space-xl)]">
           {children}
         </div>
       </main>

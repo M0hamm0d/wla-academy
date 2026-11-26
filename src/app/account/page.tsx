@@ -154,65 +154,6 @@ export default async function AccountPage() {
         </section>
       )}
 
-      {/*
-        Privacy and permissions — Plan §1 keeps them in the account area.
-        States only what the Academy does (Architecture §3, §15, §16; D-58,
-        D-73) and the approved retention policy (D-148).
-      */}
-      <section
-        aria-labelledby="privacy-permissions"
-        className="mt-[var(--space-2xl)] border-t border-[var(--color-border)] pt-[var(--space-l)]"
-      >
-        <h2 id="privacy-permissions" className="text-[length:var(--text-h3)]">
-          Privacy and permissions
-        </h2>
-        <ul className="wla-measure mt-[var(--space-s)] flex flex-col gap-[var(--space-s)]">
-          <li>
-            Each child&rsquo;s Mission Trail is private to them. Nothing in it
-            is shared unless you give permission for the Mission Board.
-          </li>
-          <li>
-            Child access codes let a child open only their own missions — never
-            purchases, settings or another child.
-            {perChild.length > 0 && (
-              <ul className="mt-[var(--space-xs)] flex flex-col gap-[2px] text-[length:var(--text-small)]">
-                {perChild.map((c) => (
-                  <li key={c.id}>
-                    {c.name}: {c.codeActive ? "a code is active" : "no code"} ·{" "}
-                    <Link
-                      href={`/account/children/${c.id}`}
-                      className="inline-flex min-h-[var(--target-min)] items-center underline decoration-[var(--color-border-strong)] underline-offset-4"
-                    >
-                      Manage
-                      <span className="sr-only">
-                        {" "}
-                        {c.name}&rsquo;s profile and code
-                      </span>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-          <li>
-            Deleting a child profile deletes their missions, progress, Mission
-            Trail and its files. Other profiles aren&rsquo;t affected.
-          </li>
-          <li>
-            Nothing is deleted because an account hasn&rsquo;t been used for a
-            while: missions and saved work stay while the account is open.
-          </li>
-        </ul>
-        {board.length > 0 ? (
-          <BoardPermissions rows={board} nested />
-        ) : (
-          <p className="wla-measure mt-[var(--space-m)] text-[length:var(--text-small)] text-[var(--color-text-muted)]">
-            Mission Board: nothing has been offered. If a child offers
-            something, you&rsquo;ll decide here.
-          </p>
-        )}
-      </section>
-
       {/* Gifts this parent bought: the codes to share (D-149). */}
       {gifts.length > 0 && (
         <section
@@ -248,58 +189,6 @@ export default async function AccountPage() {
             Close your account
           </Link>
         </div>
-      </section>
-
-      {/* Help and support — the approved support copy (Website Master §10). */}
-      <section
-        aria-labelledby="account-support"
-        className="mt-[var(--space-2xl)] border-t border-[var(--color-border)] pt-[var(--space-l)]"
-      >
-        <h2 id="account-support" className="text-[length:var(--text-h3)]">
-          Need help?
-        </h2>
-        <p className="wla-measure mt-[var(--space-xs)]">
-          Already have a mission? Find it in My Missions.
-        </p>
-        <div className="mt-[var(--space-s)] flex flex-wrap gap-[var(--space-l)]">
-          <Link
-            href="/academy/my-missions"
-            className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4"
-          >
-            Go to My Missions →
-          </Link>
-          <Link
-            href="/academy/help"
-            className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4"
-          >
-            Academy help →
-          </Link>
-          <Link
-            href="/academy/my-missions"
-            className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4"
-          >
-            Explore Missions →
-          </Link>
-        </div>
-      </section>
-
-      {/*
-        Family Mission Guide — account side (Enhancement Plan §1, Architecture
-        §3 as amended). Its approved text is a WLA authority document that is
-        not in the repository yet (OPEN-15), so this states what the guide is
-        and does not invent its content (D-75).
-      */}
-      <section
-        aria-labelledby="family-guide"
-        className="mt-[var(--space-2xl)] border-t border-[var(--color-border)] pt-[var(--space-l)]"
-      >
-        <h2 id="family-guide" className="text-[length:var(--text-h3)]">
-          Family Mission Guide
-        </h2>
-        <p className="wla-measure mt-[var(--space-xs)] text-[var(--color-text-muted)]">
-          How WLA missions work at home: choosing a child, My Missions, the
-          Mission Kit and Mission Trail. The guide will be available here soon.
-        </p>
       </section>
     </main>
   );

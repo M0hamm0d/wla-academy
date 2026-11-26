@@ -55,9 +55,6 @@ export default async function MissionBoardPage({
   return (
     <AcademyShell>
       <main className="wla-container-narrow py-[var(--space-2xl)]">
-        <Link href="/academy/my-missions" className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4 hover:decoration-[var(--color-primary)]">
-          ← My Missions
-        </Link>
         <h1 className="mt-[var(--space-m)] text-[length:var(--text-h1)]">Mission Board</h1>
         <p className="mt-[var(--space-s)] wla-measure text-[var(--color-text-muted)]">
           Different ways other explorers approached missions you have finished. Shared with a parent&rsquo;s

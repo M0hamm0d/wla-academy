@@ -89,23 +89,6 @@ export default async function MissionHomePage({
   return (
     <AcademyShell>
       <main>
-        {/* §10 — the way back to the collection, above everything. */}
-        <div className="wla-container pt-[var(--space-l)]">
-          <Link
-            href="/academy/my-missions"
-            className="inline-flex min-h-[var(--target-min)] items-center text-[length:var(--text-label)] underline decoration-[var(--color-border-strong)] underline-offset-4 hover:decoration-[var(--color-primary)]"
-          >
-            ← My Missions
-          </Link>
-        </div>
-        {/*
-          1. Identity, led by the mission's photograph.
-
-          The split the public site uses everywhere: the image holds the left
-          five columns and everything the child reads sits in the right seven,
-          so the page opens the way a mission card does rather than with a
-          heading floating on empty canvas.
-        */}
         <div className="wla-container wla-split py-[var(--space-xl)] md:py-[var(--space-2xl)]">
           {cover && (
             <div className="lg:col-span-5">

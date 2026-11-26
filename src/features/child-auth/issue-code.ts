@@ -5,23 +5,7 @@ import { logInfo, logWarn } from "@/lib/observability/logger";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { openCode, sealCode } from "./code-crypto";
 
-/**
- * Issue (or reissue) a child's access code — the one mechanism, shared by the
- * profile's "Create a code" and by creating a child with a code (D-108).
- *
- * Deliberately NOT in a "use server" file: every export of one becomes a
- * callable endpoint, and this is a building block for actions that have their
- * own entry checks, not an action itself.
- *
- * The family boundary is asserted here and again inside
- * `issue_child_access_code`, which compares the child's parent to `auth.uid()`.
- * The code is generated and hashed in the database. This carries the plaintext
- * back for the parent to see and stores an encrypted copy (D-143). The plaintext
- * is never logged, put in a URL or cached.
- *
- * A copy that can't be stored doesn't lose the code: it works, the parent sees
- * it now, and the profile offers a replacement if they want one they can view.
- */
+
 export async function issueChildAccessCode(
   childId: string,
 ): Promise<{ code: string; viewable: boolean } | { error: "not_owned" | "failed" }> {
